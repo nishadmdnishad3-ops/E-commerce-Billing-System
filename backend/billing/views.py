@@ -306,8 +306,31 @@ class InvoiceItemViewSet(viewsets.ModelViewSet):
 
 
 class PaymentViewSet(viewsets.ModelViewSet):
-    queryset = Payment.objects.select_related("invoice", "payment_method")
+    queryset = Payment.objects.select_related("invoice", "invoice__client", "payment_method")
     serializer_class = PaymentSerializer
     filterset_class = PaymentFilter
     ordering = ["-payment_date", "-id"]
     permission_classes = [IsAccountantOrAdmin]
+
+    @action(detail=True, methods=["get"], permission_classes=[IsStaffOrAbove])
+    def download_receipt(self, request, pk=None):
+        from django.http import HttpResponse
+        from .pdf_service import generate_money_receipt_pdf
+        payment = self.get_object()
+        pdf_bytes = generate_money_receipt_pdf(payment)
+        filename = f"Money_Receipt_{payment.receipt_number}.pdf"
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+    @action(detail=True, methods=["get"], permission_classes=[IsStaffOrAbove])
+    def preview_receipt(self, request, pk=None):
+        from django.http import HttpResponse
+        from .pdf_service import generate_money_receipt_pdf
+        payment = self.get_object()
+        pdf_bytes = generate_money_receipt_pdf(payment)
+        filename = f"Money_Receipt_{payment.receipt_number}.pdf"
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
+        return response
+

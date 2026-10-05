@@ -103,6 +103,15 @@ export interface InvoiceItem {
 export interface Payment {
   id: number;
   invoice: number;
+  receipt_number?: string;
+  invoice_number?: string;
+  invoice_title?: string;
+  client_name?: string;
+  client_id?: number;
+  currency_symbol?: string;
+  invoice_payable_amount?: string;
+  invoice_due_amount?: string;
+  invoice_status?: "DRAFT" | "ISSUED" | "PAID" | "PARTIALLY_PAID" | "CANCELLED";
   amount: string;
   payment_date: string;
   payment_method: number | null;
@@ -344,6 +353,57 @@ class ApiService {
 
   async recordPayment(invoiceId: number, data: { amount: string | number; payment_method?: number; transaction_id?: string; note?: string; payment_date?: string }) {
     return this.post<{ message: string; payment: Payment; invoice: Invoice }>(`/invoices/${invoiceId}/record_payment/`, data);
+  }
+
+  // Payments & Money Receipts
+  async getPayments(params?: any) {
+    return this.get<{ count: number; results: Payment[] }>("/payments/", params);
+  }
+
+  async getPayment(id: number | string) {
+    return this.get<Payment>(`/payments/${id}/`);
+  }
+
+  async createPayment(data: Partial<Payment>) {
+    return this.post<Payment>("/payments/", data);
+  }
+
+  async deletePayment(id: number | string) {
+    return this.delete(`/payments/${id}/`);
+  }
+
+  async getPaymentReceiptPdfBlob(id: number | string): Promise<Blob> {
+    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
+    const res = await fetch(`${API_BASE_URL}/payments/${id}/preview_receipt/`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to generate receipt PDF (${res.status})`);
+    }
+    return res.blob();
+  }
+
+  async downloadPaymentReceiptPdf(id: number | string, receiptNumber?: string) {
+    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
+    const res = await fetch(`${API_BASE_URL}/payments/${id}/download_receipt/`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to download receipt PDF (${res.status})`);
+    }
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Money_Receipt_${receiptNumber || id}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
   }
 
   async generateMonthlyBills(billing_month: string) {

@@ -2,6 +2,8 @@ import datetime
 from decimal import Decimal, ROUND_HALF_UP
 import io
 from django.db import models, transaction
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 from django.utils import timezone
 from django.conf import settings
 from django.core.files.base import ContentFile
@@ -355,19 +357,20 @@ class Invoice(models.Model):
 
         # Advance & Payments
         advance_val = Decimal(str(self.advance_amount or "0.00")).quantize(Decimal("0.01"))
-        self.paid_amount = sum((payment.amount for payment in self.payments.all()), Decimal("0.00")).quantize(Decimal("0.01"))
+        self.paid_amount = sum((payment.amount for payment in Payment.objects.filter(invoice=self)), Decimal("0.00")).quantize(Decimal("0.01"))
         
         total_settled = advance_val + self.paid_amount
         self.due_amount = max(self.payable_amount - total_settled, Decimal("0.00")).quantize(Decimal("0.01"))
 
-        # Status transition
+        # Status transition (Unpaid -> Partial -> Paid)
         if self.status != "CANCELLED":
             if self.due_amount == Decimal("0.00") and self.payable_amount > Decimal("0.00"):
                 self.status = "PAID"
-            elif total_settled > Decimal("0.00"):
+            elif Decimal("0.00") < total_settled < self.payable_amount:
                 self.status = "PARTIALLY_PAID"
-            elif self.status == "PAID" and self.due_amount > Decimal("0.00"):
-                self.status = "ISSUED"
+            elif total_settled == Decimal("0.00"):
+                if self.status in ["PAID", "PARTIALLY_PAID"]:
+                    self.status = "ISSUED"
 
     def generate_qr_code(self, force=False):
         if self.qr_code and not force:
@@ -471,6 +474,11 @@ class Payment(models.Model):
     note = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    @property
+    def receipt_number(self):
+        date_str = self.payment_date.strftime("%Y%m") if self.payment_date else timezone.localdate().strftime("%Y%m")
+        return f"MR-{date_str}-{self.id:04d}" if self.id else "MR-PENDING"
+
     def __str__(self):
         return f"Payment {self.amount} for {self.invoice.invoice_number}"
 
@@ -479,9 +487,40 @@ class Payment(models.Model):
             self.payment_date = self.payment_date.date()
         self.amount = Decimal(str(self.amount)).quantize(Decimal("0.01"))
         super().save(*args, **kwargs)
+        if hasattr(self.invoice, "_prefetched_objects_cache"):
+            self.invoice._prefetched_objects_cache.pop("payments", None)
         self.invoice.calculate_totals()
         Invoice.objects.filter(pk=self.invoice.pk).update(
             paid_amount=self.invoice.paid_amount,
             due_amount=self.invoice.due_amount,
             status=self.invoice.status,
         )
+
+    def delete(self, *args, **kwargs):
+        invoice = self.invoice
+        res = super().delete(*args, **kwargs)
+        if hasattr(invoice, "_prefetched_objects_cache"):
+            invoice._prefetched_objects_cache.pop("payments", None)
+        invoice.calculate_totals()
+        Invoice.objects.filter(pk=invoice.pk).update(
+            paid_amount=invoice.paid_amount,
+            due_amount=invoice.due_amount,
+            status=invoice.status,
+        )
+        return res
+
+
+@receiver(post_delete, sender=Payment)
+def payment_post_delete(sender, instance, **kwargs):
+    if instance.invoice_id:
+        try:
+            inv = Invoice.objects.get(pk=instance.invoice_id)
+            inv.calculate_totals()
+            Invoice.objects.filter(pk=inv.pk).update(
+                paid_amount=inv.paid_amount,
+                due_amount=inv.due_amount,
+                status=inv.status,
+            )
+        except Invoice.DoesNotExist:
+            pass
+

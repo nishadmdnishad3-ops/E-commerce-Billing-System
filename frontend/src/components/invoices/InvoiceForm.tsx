@@ -55,10 +55,10 @@ export default function InvoiceForm({ initialData, isEdit }: InvoiceFormProps) {
       sl: 1,
       service: null,
       item_name: "",
-      technical_specification: "Hosting & Maintenance Bill",
+      technical_specification: "",
       quantity: 1,
-      unit_price: 1000,
-      total: 1000,
+      unit_price: "" as any,
+      total: 0,
     },
   ]);
 
@@ -99,13 +99,9 @@ export default function InvoiceForm({ initialData, isEdit }: InvoiceFormProps) {
             setRecvLabel(defaultTemp.received_by_label);
           }
 
-          const d = new Date();
-          const monthNames = [
-            "January", "February", "March", "April", "May", "June",
-            "July", "August", "September", "October", "November", "December"
-          ];
-          const currMonth = `${monthNames[d.getMonth()]}-${d.getFullYear()}`;
-          setBillingMonth(currMonth);
+          // Keep Title and Billing Month blank for new bills
+          setTitle("");
+          setBillingMonth("");
         } else {
           setClientId(initialData.client);
           setCompanyId(initialData.company);
@@ -139,30 +135,6 @@ export default function InvoiceForm({ initialData, isEdit }: InvoiceFormProps) {
 
   const handleClientChange = (cId: number) => {
     setClientId(cId);
-    const selectedClient = clients.find((c) => c.id === cId);
-    if (!selectedClient) return;
-
-    if (selectedClient.client_services && selectedClient.client_services.length > 0) {
-      const firstSub = selectedClient.client_services[0];
-      const sName = firstSub.custom_name || firstSub.service_name || "Software";
-      setTitle(`${sName} Monthly Bill (${billingMonth || "Current"})`);
-
-      const newItems = selectedClient.client_services.map((sub, index) => {
-        const p = parseFloat(sub.custom_price || "1000");
-        return {
-          sl: index + 1,
-          service: sub.service,
-          item_name: `${index + 1}. ${sub.custom_name || sub.service_name || "Software"} (${billingMonth})`,
-          technical_specification: sub.custom_tech_specification || "Hosting & Maintenance Bill",
-          quantity: 1,
-          unit_price: p,
-          total: p,
-        };
-      });
-      setItems(newItems);
-    } else {
-      setTitle(`Software Monthly Bill (${billingMonth || "Current"})`);
-    }
   };
 
   const handleItemServiceChange = (index: number, sId: number | "") => {
@@ -179,14 +151,14 @@ export default function InvoiceForm({ initialData, isEdit }: InvoiceFormProps) {
       newItems[index] = {
         ...newItems[index],
         service: targetService.id,
-        item_name: `${newItems[index].sl}. ${sName} (${billingMonth || "Current"})`,
-        technical_specification: spec,
+        item_name: billingMonth ? `${sName} (${billingMonth})` : sName,
+        technical_specification: spec || "",
         unit_price: price,
         total: (Number(newItems[index].quantity) || 1) * price,
       };
 
-      if (!title || title.includes("Monthly Bill")) {
-        setTitle(`${sName} Monthly Bill (${billingMonth || "Current"})`);
+      if (!title) {
+        setTitle(billingMonth ? `${sName} Monthly Bill (${billingMonth})` : `${sName} Bill`);
       }
     } else {
       newItems[index].service = null;
@@ -212,10 +184,10 @@ export default function InvoiceForm({ initialData, isEdit }: InvoiceFormProps) {
         sl: items.length + 1,
         service: null,
         item_name: "",
-        technical_specification: "Hosting & Maintenance Bill",
+        technical_specification: "",
         quantity: 1,
-        unit_price: 1000,
-        total: 1000,
+        unit_price: "" as any,
+        total: 0,
       },
     ]);
   };
@@ -258,7 +230,7 @@ export default function InvoiceForm({ initialData, isEdit }: InvoiceFormProps) {
         sl: it.sl || idx + 1,
         service: it.service || null,
         item_name: it.item_name?.trim() || `Service Item #${idx + 1}`,
-        technical_specification: it.technical_specification?.trim() || "Hosting & Maintenance Bill",
+        technical_specification: it.technical_specification?.trim() || "",
         quantity: Number(it.quantity) || 1,
         unit_price: Number(it.unit_price) || 0,
       }));
@@ -559,6 +531,7 @@ export default function InvoiceForm({ initialData, isEdit }: InvoiceFormProps) {
                   step="0.01"
                   required
                   value={item.unit_price}
+                  placeholder="0.00"
                   onChange={(e) => handleItemChange(index, "unit_price", e.target.value)}
                   className="w-full px-2 py-2 bg-white border border-slate-300 rounded-lg text-slate-900 text-xs text-right focus:outline-none focus:ring-1 focus:ring-cyan-500 font-semibold"
                 />

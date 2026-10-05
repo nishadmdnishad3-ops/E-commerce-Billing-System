@@ -32,6 +32,7 @@ export default function InvoicesListPage() {
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [selectedMethod, setSelectedMethod] = useState<number | undefined>();
+  const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split("T")[0]);
   const [transactionId, setTransactionId] = useState("");
   const [paymentNote, setPaymentNote] = useState("");
   const [paymentLoading, setPaymentLoading] = useState(false);
@@ -73,6 +74,7 @@ export default function InvoicesListPage() {
   const handleOpenPayment = (inv: Invoice) => {
     setSelectedInvoice(inv);
     setPaymentAmount(inv.due_amount);
+    setPaymentDate(new Date().toISOString().split("T")[0]);
     setTransactionId("");
     setPaymentNote("");
     setPaymentError("");
@@ -87,14 +89,18 @@ export default function InvoicesListPage() {
     try {
       setPaymentLoading(true);
       setPaymentError("");
-      await api.recordPayment(selectedInvoice.id, {
+      const res = await api.recordPayment(selectedInvoice.id, {
         amount: paymentAmount,
         payment_method: selectedMethod,
+        payment_date: paymentDate,
         transaction_id: transactionId,
         note: paymentNote,
       });
       setSelectedInvoice(null);
       await loadInvoices();
+      if (res.payment && confirm("Payment recorded successfully! Would you like to download the official Money Receipt PDF now?")) {
+        api.downloadPaymentReceiptPdf(res.payment.id, res.payment.receipt_number);
+      }
     } catch (err: any) {
       setPaymentError(err.message || "Failed to record payment");
     } finally {
@@ -307,10 +313,18 @@ export default function InvoicesListPage() {
                             ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
                             : inv.status === "PARTIALLY_PAID"
                             ? "bg-amber-50 text-amber-700 border border-amber-200"
-                            : "bg-blue-50 text-blue-700 border border-blue-200"
+                            : inv.status === "DRAFT"
+                            ? "bg-slate-100 text-slate-700 border border-slate-200"
+                            : "bg-rose-50 text-rose-700 border border-rose-200"
                         }`}
                       >
-                        {inv.status}
+                        {inv.status === "PAID"
+                          ? "Paid"
+                          : inv.status === "PARTIALLY_PAID"
+                          ? "Partially Paid"
+                          : inv.status === "DRAFT"
+                          ? "Draft"
+                          : "Unpaid"}
                       </span>
                     </td>
                     <td className="py-4 px-6 text-right space-x-1.5 whitespace-nowrap">
@@ -432,6 +446,19 @@ export default function InvoicesListPage() {
                     </option>
                   ))}
                 </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                  Payment Date
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={paymentDate}
+                  onChange={(e) => setPaymentDate(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium"
+                />
               </div>
 
               <div>

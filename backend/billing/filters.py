@@ -36,7 +36,20 @@ class ClientFilter(django_filters.FilterSet):
 class PaymentFilter(django_filters.FilterSet):
     payment_date_after = django_filters.DateFilter(field_name="payment_date", lookup_expr="gte")
     payment_date_before = django_filters.DateFilter(field_name="payment_date", lookup_expr="lte")
+    client = django_filters.NumberFilter(field_name="invoice__client__id")
+    search = django_filters.CharFilter(method="filter_search")
 
     class Meta:
         model = Payment
-        fields = ["invoice", "payment_method", "payment_date_after", "payment_date_before"]
+        fields = ["invoice", "payment_method", "client", "payment_date_after", "payment_date_before"]
+
+    def filter_search(self, queryset, name, value):
+        from django.db.models import Q
+        return queryset.filter(
+            Q(transaction_id__icontains=value) |
+            Q(note__icontains=value) |
+            Q(invoice__invoice_number__icontains=value) |
+            Q(invoice__client_name__icontains=value) |
+            Q(invoice__title__icontains=value)
+        )
+

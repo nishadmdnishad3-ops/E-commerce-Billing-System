@@ -226,10 +226,18 @@ export default function DashboardPage() {
                             ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
                             : inv.status === "PARTIALLY_PAID"
                             ? "bg-amber-50 text-amber-700 border border-amber-200"
-                            : "bg-blue-50 text-blue-700 border border-blue-200"
+                            : inv.status === "DRAFT"
+                            ? "bg-slate-100 text-slate-700 border border-slate-200"
+                            : "bg-rose-50 text-rose-700 border border-rose-200"
                         }`}
                       >
-                        {inv.status}
+                        {inv.status === "PAID"
+                          ? "Paid"
+                          : inv.status === "PARTIALLY_PAID"
+                          ? "Partially Paid"
+                          : inv.status === "DRAFT"
+                          ? "Draft"
+                          : "Unpaid"}
                       </span>
                     </td>
                     <td className="py-4 px-6 text-right space-x-2">

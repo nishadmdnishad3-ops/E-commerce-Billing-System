@@ -1,9 +1,10 @@
 import base64
 import io
 import os
+from decimal import Decimal
 from django.template.loader import render_to_string
 from django.conf import settings
-from .models import Invoice
+from .models import Invoice, Payment
 
 
 def image_to_base64(file_field_or_path):
@@ -44,7 +45,9 @@ def generate_invoice_pdf(invoice: Invoice) -> bytes:
 
     # Fallback to local static logo if not in db
     if not logo_base64:
-        static_logo = settings.BASE_DIR.parent / "frontend" / "public" / "logo.jpg"
+        static_logo = settings.BASE_DIR.parent / "frontend" / "public" / "logo.png"
+        if not static_logo.exists():
+            static_logo = settings.BASE_DIR.parent / "frontend" / "public" / "logo.jpg"
         if static_logo.exists():
             logo_base64 = image_to_base64(str(static_logo))
 
@@ -122,3 +125,159 @@ def generate_invoice_pdf(invoice: Invoice) -> bytes:
         if pisa_status.err:
             raise RuntimeError(f"xhtml2pdf generation failed with error code: {pisa_status.err}")
         return pdf_buffer.getvalue()
+
+
+def number_to_words(number, currency="Taka") -> str:
+    """Converts a numerical amount into words (e.g. 5000 -> 'Five Thousand Taka Only')"""
+    try:
+        num = Decimal(str(number))
+        taka = int(num)
+        paisa = int(round((num - taka) * 100))
+
+        ones = [
+            "", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+            "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
+            "Seventeen", "Eighteen", "Nineteen"
+        ]
+        tens = [
+            "", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"
+        ]
+
+        def convert_less_than_thousand(n):
+            if n == 0:
+                return ""
+            elif n < 20:
+                return ones[n]
+            elif n < 100:
+                return tens[n // 10] + (" " + ones[n % 10] if n % 10 != 0 else "")
+            else:
+                return ones[n // 100] + " Hundred" + (" and " + convert_less_than_thousand(n % 100) if n % 100 != 0 else "")
+
+        if taka == 0:
+            words = f"Zero {currency}"
+        else:
+            parts = []
+            if taka >= 10000000:
+                crores = taka // 10000000
+                parts.append(convert_less_than_thousand(crores) + " Crore")
+                taka %= 10000000
+            if taka >= 100000:
+                lakhs = taka // 100000
+                parts.append(convert_less_than_thousand(lakhs) + " Lakh")
+                taka %= 100000
+            if taka >= 1000:
+                thousands = taka // 1000
+                parts.append(convert_less_than_thousand(thousands) + " Thousand")
+                taka %= 1000
+            if taka > 0:
+                parts.append(convert_less_than_thousand(taka))
+
+            words = " ".join(parts).strip() + f" {currency}"
+
+        if paisa > 0:
+            words += " and " + convert_less_than_thousand(paisa) + " Paisa"
+
+        return words.strip() + " Only"
+    except Exception:
+        return f"{currency} {number} Only"
+
+
+def generate_money_receipt_pdf(payment: Payment) -> bytes:
+    """
+    Renders Money Receipt HTML using Django template with identical company branding,
+    header, footer, signatures, and QR code, converting to PDF using WeasyPrint / xhtml2pdf.
+    """
+    invoice = payment.invoice
+
+    # Prepare company logo
+    logo_base64 = None
+    if invoice.company_logo_snapshot:
+        logo_base64 = image_to_base64(invoice.company_logo_snapshot)
+    if not logo_base64 and invoice.company and invoice.company.logo:
+        logo_base64 = image_to_base64(invoice.company.logo)
+    if not logo_base64:
+        static_logo = settings.BASE_DIR.parent / "frontend" / "public" / "logo.png"
+        if not static_logo.exists():
+            static_logo = settings.BASE_DIR.parent / "frontend" / "public" / "logo.jpg"
+        if static_logo.exists():
+            logo_base64 = image_to_base64(str(static_logo))
+
+    # Prepare authorization signature
+    sig_base64 = None
+    if invoice.company_signature_snapshot:
+        sig_base64 = image_to_base64(invoice.company_signature_snapshot)
+    elif invoice.company and invoice.company.authorization_signature:
+        sig_base64 = image_to_base64(invoice.company.authorization_signature)
+
+    # QR Code generation for receipt authenticity
+    qr_base64 = None
+    try:
+        import qrcode
+        website = (invoice.company_website or "www.raktch.com").strip()
+        if not website.startswith("http://") and not website.startswith("https://"):
+            target_url = f"https://{website}"
+        else:
+            target_url = website
+        if not target_url.endswith("/"):
+            target_url += "/"
+        verification_url = f"{target_url}?receipt={payment.receipt_number}&invoice={invoice.invoice_number}"
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=5,
+            border=2,
+        )
+        qr.add_data(verification_url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        qr_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    except Exception:
+        verification_url = f"https://www.raktch.com?receipt={payment.receipt_number}"
+
+    # Ledger calculations up to and including this receipt
+    all_earlier = invoice.payments.filter(id__lt=payment.id)
+    prev_payments_sum = sum((p.amount for p in all_earlier), Decimal("0.00"))
+    previous_settled = (invoice.advance_amount or Decimal("0.00")) + prev_payments_sum
+    total_paid_upto_this = previous_settled + payment.amount
+    remaining_due = max(invoice.payable_amount - total_paid_upto_this, Decimal("0.00"))
+
+    currency_label = invoice.currency_symbol if invoice.currency_symbol in ["Tk", "BDT", "USD", "EUR"] else "Taka"
+    amount_in_words = number_to_words(payment.amount, currency=currency_label)
+
+    # Prepare official received stamp
+    stamp_base64 = None
+    stamp_path = settings.BASE_DIR.parent / "frontend" / "public" / "received_stamp.png"
+    if stamp_path.exists():
+        stamp_base64 = image_to_base64(str(stamp_path))
+
+    context = {
+        "payment": payment,
+        "invoice": invoice,
+        "receipt_number": payment.receipt_number,
+        "amount_in_words": amount_in_words,
+        "previous_settled": previous_settled,
+        "remaining_due": remaining_due,
+        "logo_base64": logo_base64,
+        "signature_base64": sig_base64,
+        "qr_base64": qr_base64,
+        "verification_url": verification_url,
+        "stamp_base64": stamp_base64,
+    }
+
+    html_content = render_to_string("billing/money_receipt_pdf.html", context)
+
+    # 1. Attempt WeasyPrint
+    try:
+        import weasyprint
+        pdf_bytes = weasyprint.HTML(string=html_content).write_pdf()
+        return pdf_bytes
+    except Exception:
+        from xhtml2pdf import pisa
+        pdf_buffer = io.BytesIO()
+        pisa_status = pisa.CreatePDF(html_content, dest=pdf_buffer)
+        if pisa_status.err:
+            raise RuntimeError(f"xhtml2pdf generation failed with error code: {pisa_status.err}")
+        return pdf_buffer.getvalue()
+

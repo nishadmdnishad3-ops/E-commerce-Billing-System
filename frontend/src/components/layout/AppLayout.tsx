@@ -13,11 +13,13 @@ import {
   LogOut,
   Menu,
   X,
+  CreditCard,
 } from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/invoices", label: "Invoices", icon: FileText },
+  { href: "/payments", label: "Payments & Due", icon: CreditCard },
   { href: "/invoices/new", label: "Create Bill", icon: PlusCircle },
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/services", label: "Services", icon: Layers },
@@ -70,7 +72,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <div>
           {/* Logo & Brand */}
           <div className="p-5 border-b border-slate-100 flex items-center justify-center">
-            <img src="/logo.jpg" alt="RAKTCH Technology & Software" className="h-10 object-contain" />
+            <img src="/logo.png" alt="RAKTCH Technology & Software" className="h-10 object-contain" />
           </div>
 
           {/* Navigation */}

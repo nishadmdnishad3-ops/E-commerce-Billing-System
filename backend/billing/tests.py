@@ -229,3 +229,125 @@ class AuthAndRoleAPITest(APITestCase):
         self.client.force_authenticate(user=self.admin_user)
         resp = self.client.delete(f"/api/invoices/{self.invoice.id}/")
         self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+
+
+class Phase6PaymentAndDueTrackingTest(APITestCase):
+    """
+    Phase 6 tests:
+    1. Payment entry (Method, Date, Transaction ID)
+    2. Status Auto Update (Unpaid -> Partial -> Paid) and reverse on deletion
+    3. Money Receipt PDF generation and download
+    """
+    def setUp(self):
+        self.admin = User.objects.create_superuser(username="admin6", password="password6", email="admin6@test.com")
+        UserProfile.objects.create(user=self.admin, role=UserProfile.ROLE_ADMIN)
+
+        self.company = Company.objects.create(
+            name="RAKTCH TECHNOLOGY & SOFTWARE",
+            address="Sector 6, Uttara, Dhaka",
+            email="support@raktch.com",
+            phone="+8801581677077",
+            website="www.raktch.com",
+        )
+        self.client_entity = Client.objects.create(name="ABC Enterprise", contact_person="Karim Ahmed", phone="01711111111")
+        self.payment_method = PaymentMethod.objects.create(name="bKash Merchant", description="Direct bKash payment")
+
+        self.invoice = Invoice.objects.create(
+            title="Software Monthly Fee",
+            client=self.client_entity,
+            company=self.company,
+            issue_date=datetime.date(2026, 10, 5),
+            status="ISSUED",
+        )
+        InvoiceItem.objects.create(
+            invoice=self.invoice,
+            sl=1,
+            item_name="Enterprise ERP Monthly",
+            quantity=Decimal("1.00"),
+            unit_price=Decimal("1000.00"),
+            total=Decimal("1000.00"),
+        )
+        self.invoice.calculate_totals()
+        self.invoice.save()
+
+    def test_status_auto_update_flow(self):
+        """Unpaid (ISSUED) -> Partial (PARTIALLY_PAID) -> Paid (PAID) -> reverse on delete"""
+        self.client.force_authenticate(user=self.admin)
+        inv = self.invoice
+        inv.refresh_from_db()
+        self.assertEqual(inv.status, "ISSUED")
+        self.assertEqual(inv.due_amount, Decimal("1000.00"))
+
+        # 1. Partial payment: 400.00
+        p1_resp = self.client.post(f"/api/invoices/{inv.id}/record_payment/", {
+            "amount": "400.00",
+            "payment_method": self.payment_method.id,
+            "payment_date": "2026-10-05",
+            "transaction_id": "TRX-4001",
+            "note": "Advance payment via bKash"
+        })
+        self.assertEqual(p1_resp.status_code, status.HTTP_201_CREATED)
+        inv.refresh_from_db()
+        self.assertEqual(inv.status, "PARTIALLY_PAID")
+        self.assertEqual(inv.paid_amount, Decimal("400.00"))
+        self.assertEqual(inv.due_amount, Decimal("600.00"))
+
+        # 2. Settle remaining 600.00 -> PAID
+        p2_resp = self.client.post(f"/api/invoices/{inv.id}/record_payment/", {
+            "amount": "600.00",
+            "payment_method": self.payment_method.id,
+            "payment_date": "2026-10-06",
+            "transaction_id": "TRX-4002",
+            "note": "Final settlement"
+        })
+        self.assertEqual(p2_resp.status_code, status.HTTP_201_CREATED)
+        inv.refresh_from_db()
+        self.assertEqual(inv.status, "PAID")
+        self.assertEqual(inv.paid_amount, Decimal("1000.00"))
+        self.assertEqual(inv.due_amount, Decimal("0.00"))
+
+        # 3. Delete second payment -> Revert to PARTIALLY_PAID
+        p2_id = p2_resp.data["payment"]["id"]
+        del_resp = self.client.delete(f"/api/payments/{p2_id}/")
+        self.assertEqual(del_resp.status_code, status.HTTP_204_NO_CONTENT)
+        inv.refresh_from_db()
+        self.assertEqual(inv.status, "PARTIALLY_PAID")
+        self.assertEqual(inv.paid_amount, Decimal("400.00"))
+        self.assertEqual(inv.due_amount, Decimal("600.00"))
+
+        # 4. Delete first payment -> Revert to ISSUED (Unpaid)
+        p1_id = p1_resp.data["payment"]["id"]
+        del_resp2 = self.client.delete(f"/api/payments/{p1_id}/")
+        self.assertEqual(del_resp2.status_code, status.HTTP_204_NO_CONTENT)
+        inv.refresh_from_db()
+        self.assertEqual(inv.status, "ISSUED")
+        self.assertEqual(inv.paid_amount, Decimal("0.00"))
+        self.assertEqual(inv.due_amount, Decimal("1000.00"))
+
+    def test_money_receipt_pdf_endpoints(self):
+        """Test download and preview of Money Receipt PDF"""
+        self.client.force_authenticate(user=self.admin)
+
+        p_resp = self.client.post(f"/api/invoices/{self.invoice.id}/record_payment/", {
+            "amount": "500.00",
+            "payment_method": self.payment_method.id,
+            "payment_date": "2026-10-05",
+            "transaction_id": "TRX-RCPT-99",
+            "note": "Payment for receipt generation"
+        })
+        p_id = p_resp.data["payment"]["id"]
+
+        # Download Receipt PDF
+        dl_resp = self.client.get(f"/api/payments/{p_id}/download_receipt/")
+        self.assertEqual(dl_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(dl_resp["Content-Type"], "application/pdf")
+        self.assertIn("attachment; filename=", dl_resp["Content-Disposition"])
+        self.assertGreater(len(dl_resp.content), 1000)
+
+        # Preview Receipt PDF
+        prev_resp = self.client.get(f"/api/payments/{p_id}/preview_receipt/")
+        self.assertEqual(prev_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(prev_resp["Content-Type"], "application/pdf")
+        self.assertIn("inline; filename=", prev_resp["Content-Disposition"])
+        self.assertGreater(len(prev_resp.content), 1000)
+

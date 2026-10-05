@@ -110,10 +110,38 @@ class InvoiceItemSerializer(serializers.ModelSerializer):
 
 class PaymentSerializer(serializers.ModelSerializer):
     payment_method_name = serializers.ReadOnlyField(source="payment_method.name")
+    receipt_number = serializers.ReadOnlyField()
+    invoice_number = serializers.ReadOnlyField(source="invoice.invoice_number")
+    invoice_title = serializers.ReadOnlyField(source="invoice.title")
+    client_name = serializers.ReadOnlyField(source="invoice.client_name")
+    client_id = serializers.ReadOnlyField(source="invoice.client.id")
+    currency_symbol = serializers.ReadOnlyField(source="invoice.currency_symbol")
+    invoice_payable_amount = serializers.ReadOnlyField(source="invoice.payable_amount")
+    invoice_due_amount = serializers.ReadOnlyField(source="invoice.due_amount")
+    invoice_status = serializers.ReadOnlyField(source="invoice.status")
 
     class Meta:
         model = Payment
-        fields = ["id", "invoice", "amount", "payment_date", "payment_method", "payment_method_name", "transaction_id", "note", "created_at"]
+        fields = [
+            "id",
+            "invoice",
+            "receipt_number",
+            "invoice_number",
+            "invoice_title",
+            "client_name",
+            "client_id",
+            "currency_symbol",
+            "invoice_payable_amount",
+            "invoice_due_amount",
+            "invoice_status",
+            "amount",
+            "payment_date",
+            "payment_method",
+            "payment_method_name",
+            "transaction_id",
+            "note",
+            "created_at",
+        ]
 
 
 class InvoiceListSerializer(serializers.ModelSerializer):
