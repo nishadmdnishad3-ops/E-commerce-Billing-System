@@ -564,17 +564,38 @@ export default function InvoiceDetailPage() {
           </table>
         </div>
 
-        {/* Bank Details */}
-        <div className="mt-4 mb-6 p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-1">
-          <div className="font-bold text-slate-900 text-xs mb-1">
-            {invoice.nb_text || "[N.B Please send the bill to]"}
+        {/* Bank Details (One Side Layout) */}
+        {(invoice.bank_name || invoice.account_number) && (
+          <div className="mt-4 mb-6 max-w-lg p-4 rounded-2xl bg-gradient-to-br from-slate-50 to-blue-50/20 border border-slate-200/80 text-xs">
+            <div className="font-bold text-slate-900 text-xs mb-2">
+              {invoice.nb_text || "[N.B Please send the bill to]"}
+            </div>
+            <div className="space-y-1 text-slate-700">
+              <div>
+                <span className="text-slate-500 font-medium">Bank Name:</span>{" "}
+                <span className="font-bold text-blue-900">{invoice.bank_name}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 font-medium">Account Name:</span>{" "}
+                <span className="font-semibold text-slate-800">{invoice.account_name}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 font-medium">Acc No:</span>{" "}
+                <span className="font-mono font-bold text-slate-900">{invoice.account_number}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 font-medium">Branch:</span>{" "}
+                <span className="font-medium text-slate-800">{invoice.branch_name}</span>
+                {invoice.routing_number && (
+                  <span className="text-slate-500">
+                    {" "}| <span className="font-medium">Routing No:</span>{" "}
+                    <span className="font-mono font-semibold text-slate-700">{invoice.routing_number}</span>
+                  </span>
+                )}
+              </div>
+            </div>
           </div>
-          <div className="font-bold text-blue-900 text-sm">{invoice.bank_name}</div>
-          <div className="text-slate-700"><b>Account Name:</b> {invoice.account_name}</div>
-          <div className="text-slate-700"><b>Acc No:</b> <span className="font-mono font-bold">{invoice.account_number}</span></div>
-          <div className="text-slate-700"><b>Branch Name:</b> {invoice.branch_name}</div>
-          <div className="text-slate-700"><b>Routing No:</b> <span className="font-mono">{invoice.routing_number}</span></div>
-        </div>
+        )}
 
         {/* Signatures */}
         <div className="flex justify-between items-end pt-12 pb-4 text-xs font-semibold text-slate-800">

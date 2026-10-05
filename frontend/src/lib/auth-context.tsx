@@ -8,18 +8,22 @@ interface AuthContextType {
   user: User | null;
   loading: boolean;
   login: (username: string, pass: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
+  changePassword: (data: { old_password: string; new_password: string; confirm_password: string }) => Promise<void>;
   isAdmin: boolean;
   isAccountant: boolean;
+  isStaff: boolean;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
   loading: true,
   login: async () => {},
-  logout: () => {},
+  logout: async () => {},
+  changePassword: async () => {},
   isAdmin: false,
   isAccountant: false,
+  isStaff: false,
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -30,12 +34,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     async function loadUser() {
-      const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
-      if (!token) {
+      if (pathname === "/login") {
         setLoading(false);
-        if (pathname !== "/login") {
-          router.push("/login");
-        }
         return;
       }
 
@@ -43,10 +43,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const currentUser = await api.getCurrentUser();
         setUser(currentUser);
       } catch (err) {
-        console.error("Failed to load authenticated user:", err);
-        api.logout();
+        setUser(null);
         if (pathname !== "/login") {
-          router.push("/login");
+          router.push(`/login?from=${encodeURIComponent(pathname)}`);
         }
       } finally {
         setLoading(false);
@@ -57,23 +56,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [pathname, router]);
 
   const login = async (username: string, pass: string) => {
-    await api.login(username, pass);
-    const currentUser = await api.getCurrentUser();
-    setUser(currentUser);
-    router.push("/");
+    const res = await api.login(username, pass);
+    if (res.user) {
+      setUser(res.user);
+    } else {
+      const currentUser = await api.getCurrentUser();
+      setUser(currentUser);
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const redirectTo = params.get("from") || "/";
+    router.push(redirectTo);
   };
 
-  const logout = () => {
-    api.logout();
+  const logout = async () => {
+    await api.logout();
     setUser(null);
     router.push("/login");
   };
 
-  const isAdmin = user?.role === "ADMIN" || !!user?.is_superuser;
+  const changePassword = async (data: { old_password: string; new_password: string; confirm_password: string }) => {
+    await api.changePassword(data);
+  };
+
+  const isAdmin = user?.role === "ADMIN" || Boolean(user?.is_superuser);
   const isAccountant = isAdmin || user?.role === "ACCOUNTANT";
+  const isStaff = user?.role === "STAFF";
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, isAdmin, isAccountant }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        login,
+        logout,
+        changePassword,
+        isAdmin,
+        isAccountant,
+        isStaff,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

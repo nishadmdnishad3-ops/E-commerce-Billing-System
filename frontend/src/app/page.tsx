@@ -19,6 +19,13 @@ export default function DashboardPage() {
   const { user, isAccountant } = useAuth();
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
+  const [summary, setSummary] = useState({
+    total_billed: 0,
+    total_collected: 0,
+    total_due: 0,
+    total_invoices: 0,
+    active_clients: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [batchMonth, setBatchMonth] = useState("");
   const [batchModalOpen, setBatchModalOpen] = useState(false);
@@ -28,12 +35,16 @@ export default function DashboardPage() {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [invRes, clientRes] = await Promise.all([
+      const [invRes, clientRes, summaryRes] = await Promise.all([
         api.getInvoices({ page_size: 10 }),
         api.getClients(),
+        api.getDashboardSummary().catch(() => null),
       ]);
       setInvoices(invRes.results || []);
       setClients(clientRes.results || []);
+      if (summaryRes) {
+        setSummary(summaryRes);
+      }
     } catch (err) {
       console.error("Dashboard fetch error:", err);
     } finally {
@@ -51,9 +62,10 @@ export default function DashboardPage() {
     setBatchMonth(`${monthNames[d.getMonth()]}-${d.getFullYear()}`);
   }, []);
 
-  const totalInvoiced = invoices.reduce((acc, inv) => acc + parseFloat(inv.payable_amount || "0"), 0);
-  const totalPaid = invoices.reduce((acc, inv) => acc + parseFloat(inv.paid_amount || "0"), 0);
-  const totalDue = invoices.reduce((acc, inv) => acc + parseFloat(inv.due_amount || "0"), 0);
+  const totalInvoiced = summary.total_billed;
+  const totalPaid = summary.total_collected;
+  const totalDue = summary.total_due;
+  const activeClientsCount = summary.active_clients || clients.length;
 
   const handleGenerateBatch = async () => {
     if (!batchMonth) return;
@@ -156,7 +168,7 @@ export default function DashboardPage() {
             </div>
           </div>
           <div className="text-2xl md:text-3xl font-black text-slate-900">
-            {clients.length} <span className="text-sm font-semibold text-slate-500">companies</span>
+            {activeClientsCount} <span className="text-sm font-semibold text-slate-500">companies</span>
           </div>
           <p className="text-xs text-indigo-700/70 font-medium mt-2">Subscribed to software</p>
         </div>

@@ -491,22 +491,33 @@ class Payment(models.Model):
             self.invoice._prefetched_objects_cache.pop("payments", None)
         self.invoice.calculate_totals()
         Invoice.objects.filter(pk=self.invoice.pk).update(
+            sub_total=self.invoice.sub_total,
+            vat_amount=self.invoice.vat_amount,
+            payable_amount=self.invoice.payable_amount,
+            advance_amount=self.invoice.advance_amount,
             paid_amount=self.invoice.paid_amount,
             due_amount=self.invoice.due_amount,
             status=self.invoice.status,
         )
 
     def delete(self, *args, **kwargs):
-        invoice = self.invoice
+        invoice_id = self.invoice_id
         res = super().delete(*args, **kwargs)
-        if hasattr(invoice, "_prefetched_objects_cache"):
-            invoice._prefetched_objects_cache.pop("payments", None)
-        invoice.calculate_totals()
-        Invoice.objects.filter(pk=invoice.pk).update(
-            paid_amount=invoice.paid_amount,
-            due_amount=invoice.due_amount,
-            status=invoice.status,
-        )
+        if invoice_id:
+            try:
+                inv = Invoice.objects.get(pk=invoice_id)
+                inv.calculate_totals()
+                Invoice.objects.filter(pk=inv.pk).update(
+                    sub_total=inv.sub_total,
+                    vat_amount=inv.vat_amount,
+                    payable_amount=inv.payable_amount,
+                    advance_amount=inv.advance_amount,
+                    paid_amount=inv.paid_amount,
+                    due_amount=inv.due_amount,
+                    status=inv.status,
+                )
+            except Invoice.DoesNotExist:
+                pass
         return res
 
 
@@ -517,10 +528,93 @@ def payment_post_delete(sender, instance, **kwargs):
             inv = Invoice.objects.get(pk=instance.invoice_id)
             inv.calculate_totals()
             Invoice.objects.filter(pk=inv.pk).update(
+                sub_total=inv.sub_total,
+                vat_amount=inv.vat_amount,
+                payable_amount=inv.payable_amount,
+                advance_amount=inv.advance_amount,
                 paid_amount=inv.paid_amount,
                 due_amount=inv.due_amount,
                 status=inv.status,
             )
         except Invoice.DoesNotExist:
             pass
+
+
+@receiver(post_delete, sender=InvoiceItem)
+def invoice_item_post_delete(sender, instance, **kwargs):
+    if instance.invoice_id:
+        try:
+            inv = Invoice.objects.get(pk=instance.invoice_id)
+            inv.calculate_totals()
+            Invoice.objects.filter(pk=inv.pk).update(
+                sub_total=inv.sub_total,
+                vat_amount=inv.vat_amount,
+                payable_amount=inv.payable_amount,
+                advance_amount=inv.advance_amount,
+                paid_amount=inv.paid_amount,
+                due_amount=inv.due_amount,
+                status=inv.status,
+            )
+        except Invoice.DoesNotExist:
+            pass
+
+
+class AuditLog(models.Model):
+    ACTION_LOGIN_SUCCESS = "LOGIN_SUCCESS"
+    ACTION_LOGIN_FAILED = "LOGIN_FAILED"
+    ACTION_LOGOUT = "LOGOUT"
+    ACTION_CREATE = "CREATE"
+    ACTION_UPDATE = "UPDATE"
+    ACTION_DELETE = "DELETE"
+    ACTION_STATUS_CHANGE = "STATUS_CHANGE"
+    ACTION_PASSWORD_CHANGE = "PASSWORD_CHANGE"
+
+    ACTION_CHOICES = [
+        (ACTION_LOGIN_SUCCESS, "Login Success"),
+        (ACTION_LOGIN_FAILED, "Login Failed"),
+        (ACTION_LOGOUT, "Logout"),
+        (ACTION_CREATE, "Created"),
+        (ACTION_UPDATE, "Updated"),
+        (ACTION_DELETE, "Deleted"),
+        (ACTION_STATUS_CHANGE, "Status Changed"),
+        (ACTION_PASSWORD_CHANGE, "Password Changed"),
+    ]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="audit_logs")
+    username = models.CharField(max_length=150, blank=True)
+    action = models.CharField(max_length=50, choices=ACTION_CHOICES)
+    model_name = models.CharField(max_length=100, blank=True)
+    object_id = models.CharField(max_length=100, blank=True)
+    object_repr = models.CharField(max_length=255, blank=True)
+    changes = models.JSONField(default=dict, blank=True)
+    ip_address = models.CharField(max_length=45, blank=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-timestamp"]
+        indexes = [
+            models.Index(fields=["action", "timestamp"]),
+            models.Index(fields=["model_name", "object_id"]),
+        ]
+
+    def __str__(self):
+        return f"[{self.timestamp.strftime('%Y-%m-%d %H:%M:%S')}] {self.username} - {self.action} on {self.model_name or 'System'} ({self.object_repr})"
+
+
+class LoginAttempt(models.Model):
+    username = models.CharField(max_length=150, db_index=True)
+    ip_address = models.CharField(max_length=45, blank=True)
+    failed_attempts = models.PositiveIntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
+    last_attempt = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["username", "ip_address"]),
+        ]
+
+    def is_locked(self):
+        if self.locked_until and self.locked_until > timezone.now():
+            return True
+        return False
 

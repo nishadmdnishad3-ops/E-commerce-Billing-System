@@ -15,6 +15,7 @@ from .models import (
     Invoice,
     InvoiceItem,
     Payment,
+    AuditLog,
 )
 
 User = get_user_model()
@@ -277,3 +278,122 @@ class InvoiceCreateUpdateSerializer(serializers.ModelSerializer):
             status=instance.status,
         )
         return instance
+
+
+class UserManagementSerializer(serializers.ModelSerializer):
+    role = serializers.ChoiceField(choices=UserProfile.ROLE_CHOICES, default=UserProfile.ROLE_STAFF)
+    phone = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    password = serializers.CharField(write_only=True, required=False, min_length=6)
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "username",
+            "email",
+            "first_name",
+            "last_name",
+            "is_active",
+            "date_joined",
+            "role",
+            "phone",
+            "password",
+        ]
+        read_only_fields = ["id", "date_joined"]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.is_superuser:
+            data["role"] = UserProfile.ROLE_ADMIN
+        elif hasattr(instance, "profile"):
+            data["role"] = instance.profile.role
+            data["phone"] = instance.profile.phone
+        else:
+            data["role"] = UserProfile.ROLE_STAFF
+            data["phone"] = ""
+        return data
+
+    @transaction.atomic
+    def create(self, validated_data):
+        role = validated_data.pop("role", UserProfile.ROLE_STAFF)
+        phone = validated_data.pop("phone", "")
+        password = validated_data.pop("password", None)
+
+        if not password:
+            raise serializers.ValidationError({"password": "Password is required for new user."})
+
+        user = User.objects.create_user(password=password, **validated_data)
+        if role == UserProfile.ROLE_ADMIN:
+            user.is_staff = True
+            user.save(update_fields=["is_staff"])
+
+        UserProfile.objects.update_or_create(
+            user=user,
+            defaults={"role": role, "phone": phone}
+        )
+        return user
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        role = validated_data.pop("role", None)
+        phone = validated_data.pop("phone", None)
+        password = validated_data.pop("password", None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        if password:
+            instance.set_password(password)
+
+        if role == UserProfile.ROLE_ADMIN:
+            instance.is_staff = True
+        instance.save()
+
+        profile, _ = UserProfile.objects.get_or_create(user=instance)
+        if role is not None:
+            profile.role = role
+        if phone is not None:
+            profile.phone = phone
+        profile.save()
+
+        return instance
+
+
+class ResetPasswordSerializer(serializers.Serializer):
+    new_password = serializers.CharField(required=True, min_length=6)
+    confirm_password = serializers.CharField(required=True, min_length=6)
+
+    def validate(self, attrs):
+        if attrs["new_password"] != attrs["confirm_password"]:
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+        return attrs
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(required=True)
+    new_password = serializers.CharField(required=True, min_length=6)
+    confirm_password = serializers.CharField(required=True, min_length=6)
+
+    def validate(self, attrs):
+        if attrs["new_password"] != attrs["confirm_password"]:
+            raise serializers.ValidationError({"confirm_password": "New passwords do not match."})
+        return attrs
+
+
+class AuditLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AuditLog
+        fields = [
+            "id",
+            "user",
+            "username",
+            "action",
+            "model_name",
+            "object_id",
+            "object_repr",
+            "changes",
+            "ip_address",
+            "timestamp",
+        ]
+        read_only_fields = fields
+

@@ -1,4 +1,4 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+const API_BASE_URL = typeof window !== "undefined" ? "/api/proxy" : (process.env.INTERNAL_API_URL || "http://127.0.0.1:8000/api");
 
 export interface User {
   id: number;
@@ -9,6 +9,31 @@ export interface User {
   is_superuser: boolean;
   role: "ADMIN" | "ACCOUNTANT" | "STAFF";
   phone: string;
+}
+
+export interface ManagedUser {
+  id: number;
+  username: string;
+  email: string;
+  first_name: string;
+  last_name: string;
+  is_active: boolean;
+  date_joined: string;
+  role: "ADMIN" | "ACCOUNTANT" | "STAFF";
+  phone: string;
+}
+
+export interface AuditLog {
+  id: number;
+  user: number | null;
+  username: string;
+  action: "LOGIN_SUCCESS" | "LOGIN_FAILED" | "LOGOUT" | "CREATE" | "UPDATE" | "DELETE" | "STATUS_CHANGE" | "PASSWORD_CHANGE";
+  model_name: string;
+  object_id: string;
+  object_repr: string;
+  changes: Record<string, any>;
+  ip_address: string;
+  timestamp: string;
 }
 
 export interface Company {
@@ -184,34 +209,23 @@ export interface Invoice {
 }
 
 class ApiService {
-  private getToken(): string | null {
-    if (typeof window === "undefined") return null;
-    return localStorage.getItem("access_token");
-  }
-
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-    const token = this.getToken();
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       ...(options.headers as Record<string, string>),
     };
 
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
-
     const url = endpoint.startsWith("http") ? endpoint : `${API_BASE_URL}${endpoint}`;
     const response = await fetch(url, {
+      cache: "no-store",
+      credentials: "include",
       ...options,
       headers,
     });
 
     if (response.status === 401 && typeof window !== "undefined") {
-      // Token expired or invalid
-      localStorage.removeItem("access_token");
-      localStorage.removeItem("refresh_token");
       if (window.location.pathname !== "/login") {
-        window.location.href = "/login";
+        window.location.href = `/login?from=${encodeURIComponent(window.location.pathname)}`;
       }
     }
 
@@ -233,24 +247,59 @@ class ApiService {
     return response.json();
   }
 
-  // Auth
+  // Auth (Uses Next.js secure route handlers with httpOnly cookies)
   async login(username: string, password: string) {
-    const res = await this.request<{ access: string; refresh: string }>("/auth/login/", {
+    const response = await fetch("/api/auth/login", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
     });
-    localStorage.setItem("access_token", res.access);
-    localStorage.setItem("refresh_token", res.refresh);
-    return res;
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Invalid username or password.");
+    }
+    return data;
   }
 
-  logout() {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
+  async logout() {
+    await fetch("/api/auth/logout", {
+      method: "POST",
+    }).catch(() => {});
+    if (typeof window !== "undefined") {
+      window.location.href = "/login";
+    }
   }
 
   async getCurrentUser(): Promise<User> {
-    return this.request<User>("/auth/me/");
+    const response = await fetch("/api/auth/me", {
+      cache: "no-store",
+      credentials: "include",
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to load user profile");
+    }
+
+    return response.json();
+  }
+
+  async changePassword(data: { old_password: string; new_password: string; confirm_password: string }) {
+    const response = await fetch("/api/auth/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+
+    const resData = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      let msg = resData.detail;
+      if (!msg && typeof resData === "object") {
+        msg = Object.values(resData).flat().join(" ");
+      }
+      throw new Error(msg || "Failed to change password.");
+    }
+    return resData;
   }
 
   // Generic helpers
@@ -296,6 +345,32 @@ class ApiService {
     return this.request<any>(endpoint, { method: "DELETE" });
   }
 
+  // User Management (Admin Only)
+  async getUsers(params?: any) {
+    return this.get<{ count: number; results: ManagedUser[] }>("/users/", params);
+  }
+
+  async createUser(data: any) {
+    return this.post<ManagedUser>("/users/", data);
+  }
+
+  async updateUser(id: number | string, data: any) {
+    return this.patch<ManagedUser>(`/users/${id}/`, data);
+  }
+
+  async toggleUserActive(id: number | string) {
+    return this.post<{ detail: string; is_active: boolean }>(`/users/${id}/toggle-active/`, {});
+  }
+
+  async resetUserPassword(id: number | string, data: { new_password: string; confirm_password: string }) {
+    return this.post<{ detail: string }>(`/users/${id}/reset-password/`, data);
+  }
+
+  // Audit Logs (Admin Only)
+  async getAuditLogs(params?: any) {
+    return this.get<{ count: number; results: AuditLog[] }>("/audit-logs/", params);
+  }
+
   // Invoices
   async getInvoices(params?: any) {
     return this.get<{ count: number; results: Invoice[] }>("/invoices/", params);
@@ -317,12 +392,19 @@ class ApiService {
     return this.delete(`/invoices/${id}/`);
   }
 
+  async getDashboardSummary(): Promise<{
+    total_billed: number;
+    total_collected: number;
+    total_due: number;
+    total_invoices: number;
+    active_clients: number;
+  }> {
+    return this.get("/invoices/summary/");
+  }
+
   async getInvoicePdfBlob(id: number | string): Promise<Blob> {
-    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
     const res = await fetch(`${API_BASE_URL}/invoices/${id}/preview_pdf/`, {
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: "include",
     });
     if (!res.ok) {
       throw new Error(`Failed to generate PDF (${res.status})`);
@@ -331,11 +413,8 @@ class ApiService {
   }
 
   async downloadInvoicePdf(id: number | string, invoiceNumber?: string) {
-    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
     const res = await fetch(`${API_BASE_URL}/invoices/${id}/download_pdf/`, {
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: "include",
     });
     if (!res.ok) {
       throw new Error(`Failed to download PDF (${res.status})`);
@@ -373,11 +452,8 @@ class ApiService {
   }
 
   async getPaymentReceiptPdfBlob(id: number | string): Promise<Blob> {
-    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
     const res = await fetch(`${API_BASE_URL}/payments/${id}/preview_receipt/`, {
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: "include",
     });
     if (!res.ok) {
       throw new Error(`Failed to generate receipt PDF (${res.status})`);
@@ -386,11 +462,8 @@ class ApiService {
   }
 
   async downloadPaymentReceiptPdf(id: number | string, receiptNumber?: string) {
-    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
     const res = await fetch(`${API_BASE_URL}/payments/${id}/download_receipt/`, {
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: "include",
     });
     if (!res.ok) {
       throw new Error(`Failed to download receipt PDF (${res.status})`);

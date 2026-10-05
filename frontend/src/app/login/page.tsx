@@ -2,12 +2,13 @@
 
 import React, { useState } from "react";
 import { useAuth } from "@/lib/auth-context";
-import { Lock, User, ArrowRight, Sparkles } from "lucide-react";
+import { Lock, User, ArrowRight, Sparkles, Eye, EyeOff, ShieldCheck } from "lucide-react";
 
 export default function LoginPage() {
   const { login } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -25,9 +26,10 @@ export default function LoginPage() {
     }
   };
 
-  const handleFillDemo = () => {
-    setUsername("admin");
-    setPassword("admin123");
+  const handleFillRole = (u: string, p: string) => {
+    setUsername(u);
+    setPassword(p);
+    setError("");
   };
 
   return (
@@ -40,14 +42,18 @@ export default function LoginPage() {
         {/* Brand Card */}
         <div className="bg-white border border-slate-200/90 rounded-3xl p-8 shadow-xl shadow-slate-200/60">
           <div className="text-center mb-8">
-            <img src="/logo.jpg" alt="RAKTCH Technology & Software" className="h-14 object-contain mx-auto mb-3" />
-            <p className="text-xs text-slate-500 font-medium">Sign in to manage invoices and subscriptions</p>
+            <img src="/logo.png" alt="RAKTCH Technology & Software" className="h-12 object-contain mx-auto mb-3" />
+            <h1 className="text-xl font-bold text-slate-900 tracking-tight">Billing & Invoicing Portal</h1>
+            <p className="text-xs text-slate-500 font-medium mt-1">Sign in with your authorized credentials</p>
           </div>
 
           {error && (
-            <div className="mb-6 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-sm flex items-start gap-3">
-              <span className="font-bold">⚠️</span>
-              <span>{error}</span>
+            <div className="mb-6 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-sm flex items-start gap-3 animate-in fade-in">
+              <span className="font-bold text-base leading-none mt-0.5">⚠️</span>
+              <div>
+                <p className="font-semibold text-xs uppercase tracking-wider mb-0.5">Login Failed</p>
+                <p className="text-sm">{error}</p>
+              </div>
             </div>
           )}
 
@@ -66,6 +72,7 @@ export default function LoginPage() {
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="e.g. admin"
+                  autoComplete="username"
                   className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent text-sm transition-all"
                 />
               </div>
@@ -80,13 +87,21 @@ export default function LoginPage() {
                   <Lock size={18} />
                 </div>
                 <input
-                  type="password"
+                  type={showPassword ? "text" : "password"}
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent text-sm transition-all"
+                  autoComplete="current-password"
+                  className="w-full pl-10 pr-11 py-3 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent text-sm transition-all"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
               </div>
             </div>
 
@@ -106,22 +121,41 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Quick Demo Login Helper */}
-          <div className="mt-6 pt-6 border-t border-slate-100 text-center">
-            <button
-              type="button"
-              onClick={handleFillDemo}
-              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold text-cyan-700 hover:text-cyan-800 bg-cyan-50 hover:bg-cyan-100 transition-colors border border-cyan-200 cursor-pointer"
-            >
-              <Sparkles size={14} />
-              Fill Demo Credentials (admin / admin123)
-            </button>
+          {/* Quick Role Fill Shortcuts */}
+          <div className="mt-6 pt-5 border-t border-slate-100">
+            <p className="text-center text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5">
+              Quick Role Test Access
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => handleFillRole("admin", "admin123")}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-cyan-50 text-slate-700 hover:text-cyan-700 border border-slate-200 hover:border-cyan-300 transition-colors cursor-pointer text-center"
+              >
+                👑 Admin
+              </button>
+              <button
+                type="button"
+                onClick={() => handleFillRole("accountant", "accountant123")}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 border border-slate-200 hover:border-emerald-300 transition-colors cursor-pointer text-center"
+              >
+                📊 Accountant
+              </button>
+              <button
+                type="button"
+                onClick={() => handleFillRole("staff", "staff123")}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-indigo-50 text-slate-700 hover:text-indigo-700 border border-slate-200 hover:border-indigo-300 transition-colors cursor-pointer text-center"
+              >
+                💼 Staff
+              </button>
+            </div>
           </div>
         </div>
 
-        <p className="text-center text-xs text-slate-500 mt-6">
-          © {new Date().getFullYear()} RAKTCH Technology & Software. All rights reserved.
-        </p>
+        <div className="flex items-center justify-center gap-2 text-xs text-slate-500 mt-6">
+          <ShieldCheck size={15} className="text-emerald-600" />
+          <span>Role-Based Access Control & 256-bit JWT Security</span>
+        </div>
       </div>
     </div>
   );

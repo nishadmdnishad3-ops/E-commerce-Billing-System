@@ -13,6 +13,7 @@ import {
   InvoiceItem,
 } from "@/lib/api";
 import { Plus, Trash2, ArrowLeft, Save } from "lucide-react";
+import { useAuth } from "@/lib/auth-context";
 
 interface InvoiceFormProps {
   initialData?: Invoice;
@@ -21,6 +22,7 @@ interface InvoiceFormProps {
 
 export default function InvoiceForm({ initialData, isEdit }: InvoiceFormProps) {
   const router = useRouter();
+  const { isAccountant, isStaff } = useAuth();
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -42,7 +44,9 @@ export default function InvoiceForm({ initialData, isEdit }: InvoiceFormProps) {
   const [billingMonth, setBillingMonth] = useState("");
   const [issueDate, setIssueDate] = useState(new Date().toISOString().split("T")[0]);
   const [dueDate, setDueDate] = useState("");
-  const [status, setStatus] = useState<"DRAFT" | "ISSUED" | "PAID" | "PARTIALLY_PAID" | "CANCELLED">("ISSUED");
+  const [status, setStatus] = useState<"DRAFT" | "ISSUED" | "PAID" | "PARTIALLY_PAID" | "CANCELLED">(
+    !isAccountant ? "DRAFT" : "ISSUED"
+  );
 
   const [nbText, setNbText] = useState("[N.B Please send the bill to]");
   const [authLabel, setAuthLabel] = useState("Authorization");

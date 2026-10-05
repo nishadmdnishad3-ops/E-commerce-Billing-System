@@ -6,31 +6,13 @@
   <style>
     @page {
       size: a4 portrait;
-      margin: 8mm 12mm 12mm 12mm;
-      @top-right {
-        content: "Page " counter(page) " of " counter(pages);
-        font-family: Arial, sans-serif;
-        font-size: 8pt;
-        color: #64748b;
-      }
-      @bottom-left {
-        content: "RAKTCH Technology & Software | www.raktch.com";
-        font-family: Arial, sans-serif;
-        font-size: 8pt;
-        color: #64748b;
-      }
-      @bottom-right {
-        content: "Invoice: {{ invoice.invoice_number }}";
-        font-family: Arial, sans-serif;
-        font-size: 8pt;
-        color: #64748b;
-      }
+      margin: 8mm 12mm 22mm 12mm;
       @frame footer_frame {
         -pdf-frame-content: pdf_running_footer;
         bottom: 4mm;
         margin-left: 12mm;
         margin-right: 12mm;
-        height: 8mm;
+        height: 16mm;
       }
     }
 
@@ -48,25 +30,6 @@
       color: #64748b;
       border-top: 0.5pt solid #cbd5e1;
       padding-top: 2px;
-    }
-
-    /* Watermark for status */
-    .watermark {
-      position: fixed;
-      top: 35%;
-      left: 15%;
-      width: 70%;
-      text-align: center;
-      transform: rotate(-35deg);
-      font-size: 65pt;
-      font-weight: 900;
-      color: rgba(148, 163, 184, 0.10);
-      z-index: -1000;
-      text-transform: uppercase;
-      letter-spacing: 8px;
-    }
-    .watermark.paid {
-      color: rgba(16, 185, 129, 0.12);
     }
 
     /* Header styling */
@@ -183,15 +146,6 @@
   </style>
 </head>
 <body>
-
-  <!-- Watermark -->
-  {% if invoice.status == 'PAID' %}
-    <div class="watermark paid">PAID</div>
-  {% elif invoice.status == 'CANCELLED' %}
-    <div class="watermark">CANCELLED</div>
-  {% elif invoice.status == 'ISSUED' %}
-    <div class="watermark">INVOICE</div>
-  {% endif %}
 
   <!-- Top Header (Table Layout for universal xhtml2pdf & WeasyPrint compatibility) -->
   <div class="invoice-header">
@@ -330,60 +284,74 @@
     </tbody>
   </table>
 
-  <!-- Bank / Remittance Section -->
-  <div class="bank-info">
-    <div class="bank-header">{{ invoice.nb_text|default:"[N.B Please send the bill to]" }}</div>
-    <div class="bank-name">{{ invoice.bank_name }}</div>
-    <div><b>Account Name:</b> {{ invoice.account_name }} &nbsp;|&nbsp; <b>Acc No:</b> <span class="font-mono font-bold">{{ invoice.account_number }}</span></div>
-    <div><b>Branch Name:</b> {{ invoice.branch_name }} &nbsp;|&nbsp; <b>Routing No:</b> <span class="font-mono">{{ invoice.routing_number }}</span></div>
-  </div>
+  <!-- Bank / Remittance Section (One Side Layout) -->
+  {% if invoice.bank_name or invoice.account_number %}
+  <table style="width: 100%; border: none; margin-top: 6px; margin-bottom: 6px;" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="width: 55%; vertical-align: top; border: none; padding: 0;">
+        <table style="width: 100%; border: 0.5pt solid #cbd5e1; background-color: #f8fafc;" cellpadding="0" cellspacing="0">
+          <tr>
+            <td style="border: none; padding: 5px 8px; font-size: 7.5pt; line-height: 1.35;">
+              <div style="font-weight: bold; font-size: 7.5pt; color: #0f172a; margin-bottom: 2px;">
+                {{ invoice.nb_text|default:"[N.B Please send the bill to]" }}
+              </div>
+              <div><b>Bank Name:</b> <span style="font-weight: bold; color: #1e3a8a;">{{ invoice.bank_name }}</span></div>
+              <div><b>Account Name:</b> {{ invoice.account_name }}</div>
+              <div><b>Acc No:</b> <span class="font-mono font-bold">{{ invoice.account_number }}</span></div>
+              <div><b>Branch:</b> {{ invoice.branch_name }}{% if invoice.routing_number %} &nbsp;|&nbsp; <b>Routing:</b> <span class="font-mono">{{ invoice.routing_number }}</span>{% endif %}</div>
+            </td>
+          </tr>
+        </table>
+      </td>
+      <td style="width: 45%; border: none; padding: 0;"></td>
+    </tr>
+  </table>
+  {% endif %}
 
   <!-- Signatures Block (Table Layout for Side-by-Side positioning) -->
-  <table style="width: 100%; border: none; margin-top: 14px; margin-bottom: 6px;" cellpadding="0" cellspacing="0">
+  <table style="width: 100%; border: none; margin-top: 35px; margin-bottom: 6px;" cellpadding="0" cellspacing="0">
     <tr>
       <td style="width: 38%; text-align: center; vertical-align: bottom; border: none; padding: 0;">
-        <div style="height: 32px;"></div>
+        <div style="height: 45px; line-height: 45px; font-size: 1pt;">&nbsp;</div>
         <div class="sign-line">{{ invoice.received_by_label|default:"Received by" }}</div>
       </td>
       <td style="width: 24%; border: none; padding: 0;"></td>
       <td style="width: 38%; text-align: center; vertical-align: bottom; border: none; padding: 0;">
         {% if signature_base64 %}
-          <img src="data:image/png;base64,{{ signature_base64 }}" alt="Signature" style="height: 32px; margin-bottom: 2px;" />
+          <img src="data:image/png;base64,{{ signature_base64 }}" alt="Signature" style="height: 38px; margin-bottom: 2px;" />
         {% else %}
-          <div style="height: 32px;"></div>
+          <div style="height: 45px; line-height: 45px; font-size: 1pt;">&nbsp;</div>
         {% endif %}
         <div class="sign-line">{{ invoice.authorization_label|default:"Authorized Signature" }}</div>
       </td>
     </tr>
   </table>
 
-  <!-- Bottom Footer with QR (Table Layout) -->
-  <table style="width: 100%; border: none; border-top: 0.5pt solid #cbd5e1; margin-top: 8px; padding-top: 4px;" cellpadding="0" cellspacing="0">
-    <tr>
-      <td style="width: 50%; vertical-align: middle; text-align: left; border: none; padding: 0;">
-        {% if qr_base64 %}
-          <img src="data:image/png;base64,{{ qr_base64 }}" alt="QR" style="width: 34px; height: 34px; vertical-align: middle; margin-right: 6px;" />
-        {% endif %}
-        <span style="font-size: 7.5pt; color: #64748b; vertical-align: middle;">
-          Scan to verify bill authenticity
-        </span>
-      </td>
-      <td style="width: 50%; vertical-align: middle; text-align: right; border: none; padding: 0;">
-        <span style="font-size: 8pt; font-weight: bold; color: #0284c7;">
-          {{ invoice.company_website|default:"www.raktch.com" }}
-        </span>
-      </td>
-    </tr>
-  </table>
-
-  <!-- Running Page Footer (used by PDF engine frame) -->
+  <!-- Running Page Footer (pinned to absolute bottom of page) -->
   <div id="pdf_running_footer">
-    <table style="width: 100%; border: none;" cellpadding="0" cellspacing="0">
+    <table style="width: 100%; border: none; margin-bottom: 2px;" cellpadding="0" cellspacing="0">
       <tr>
-        <td style="width: 70%; text-align: left; border: none; padding: 0;">
+        <td style="width: 55%; vertical-align: middle; text-align: left; border: none; padding: 0;">
+          {% if qr_base64 %}
+            <img src="data:image/png;base64,{{ qr_base64 }}" alt="QR" style="width: 26px; height: 26px; vertical-align: middle; margin-right: 5px;" />
+          {% endif %}
+          <span style="font-size: 7.5pt; color: #64748b; vertical-align: middle;">
+            Scan to verify bill authenticity
+          </span>
+        </td>
+        <td style="width: 45%; vertical-align: middle; text-align: right; border: none; padding: 0;">
+          <span style="font-size: 8pt; font-weight: bold; color: #0284c7;">
+            {{ invoice.company_website|default:"www.raktch.com" }}
+          </span>
+        </td>
+      </tr>
+    </table>
+    <table style="width: 100%; border: none; border-top: 0.5pt solid #e2e8f0; padding-top: 2px;" cellpadding="0" cellspacing="0">
+      <tr>
+        <td style="width: 70%; text-align: left; border: none; padding: 0; font-size: 7.5pt; color: #64748b;">
           RAKTCH Technology & Software | Invoice #{{ invoice.invoice_number }}
         </td>
-        <td style="width: 30%; text-align: right; border: none; padding: 0;">
+        <td style="width: 30%; text-align: right; border: none; padding: 0; font-size: 7.5pt; color: #64748b;">
           Page <pdf:pagenumber> of <pdf:pagecount>
         </td>
       </tr>

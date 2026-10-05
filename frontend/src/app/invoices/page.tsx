@@ -37,6 +37,11 @@ export default function InvoicesListPage() {
   const [paymentNote, setPaymentNote] = useState("");
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [paymentError, setPaymentError] = useState("");
+  const [summary, setSummary] = useState<{
+    total_billed: number;
+    total_collected: number;
+    total_due: number;
+  } | null>(null);
 
   const loadInvoices = async () => {
     try {
@@ -47,8 +52,14 @@ export default function InvoicesListPage() {
       if (hasDueFilter) params.has_due = true;
       if (billingMonthFilter) params.billing_month = billingMonthFilter;
 
-      const res = await api.getInvoices(params);
+      const [res, summaryRes] = await Promise.all([
+        api.getInvoices(params),
+        api.getDashboardSummary().catch(() => null),
+      ]);
       setInvoices(res.results || []);
+      if (summaryRes) {
+        setSummary(summaryRes);
+      }
     } catch (err) {
       console.error("Failed to load invoices:", err);
     } finally {
@@ -174,7 +185,10 @@ export default function InvoicesListPage() {
             </span>
           </div>
           <div className="mt-3 text-2xl font-black text-slate-900 tracking-tight">
-            {invoices.reduce((acc, inv) => acc + parseFloat(inv.payable_amount || "0"), 0).toLocaleString()} <span className="text-xs font-normal text-slate-500">Tk</span>
+            {(!search && !statusFilter && !hasDueFilter && !billingMonthFilter && summary
+              ? summary.total_billed
+              : invoices.reduce((acc, inv) => acc + parseFloat(inv.payable_amount || "0"), 0)
+            ).toLocaleString()} <span className="text-xs font-normal text-slate-500">Tk</span>
           </div>
           <div className="mt-1 text-[11px] text-cyan-600 font-medium">Cumulative payable volume</div>
         </div>
@@ -188,7 +202,10 @@ export default function InvoicesListPage() {
             </span>
           </div>
           <div className="mt-3 text-2xl font-black text-emerald-600 tracking-tight">
-            {invoices.reduce((acc, inv) => acc + parseFloat(inv.paid_amount || "0"), 0).toLocaleString()} <span className="text-xs font-normal text-slate-500">Tk</span>
+            {(!search && !statusFilter && !hasDueFilter && !billingMonthFilter && summary
+              ? summary.total_collected
+              : invoices.reduce((acc, inv) => acc + parseFloat(inv.paid_amount || "0"), 0)
+            ).toLocaleString()} <span className="text-xs font-normal text-slate-500">Tk</span>
           </div>
           <div className="mt-1 text-[11px] text-emerald-600 font-medium">Verified payments received</div>
         </div>
@@ -202,7 +219,10 @@ export default function InvoicesListPage() {
             </span>
           </div>
           <div className="mt-3 text-2xl font-black text-amber-600 tracking-tight">
-            {invoices.reduce((acc, inv) => acc + parseFloat(inv.due_amount || "0"), 0).toLocaleString()} <span className="text-xs font-normal text-slate-500">Tk</span>
+            {(!search && !statusFilter && !hasDueFilter && !billingMonthFilter && summary
+              ? summary.total_due
+              : invoices.reduce((acc, inv) => acc + parseFloat(inv.due_amount || "0"), 0)
+            ).toLocaleString()} <span className="text-xs font-normal text-slate-500">Tk</span>
           </div>
           <div className="mt-1 text-[11px] text-amber-600 font-medium">Outstanding receivables</div>
         </div>

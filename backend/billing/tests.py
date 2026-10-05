@@ -16,6 +16,8 @@ from .models import (
     InvoiceItem,
     Payment,
     PaymentMethod,
+    AuditLog,
+    Settings,
 )
 
 User = get_user_model()
@@ -350,4 +352,207 @@ class Phase6PaymentAndDueTrackingTest(APITestCase):
         self.assertEqual(prev_resp["Content-Type"], "application/pdf")
         self.assertIn("inline; filename=", prev_resp["Content-Disposition"])
         self.assertGreater(len(prev_resp.content), 1000)
+
+    def test_dashboard_summary_and_deletion_deduction(self):
+        """Test that deleting a payment or paid invoice immediately deducts from collected and due metrics"""
+        self.client.force_authenticate(user=self.admin)
+
+        # 1. Initial summary check
+        s1 = self.client.get("/api/invoices/summary/")
+        self.assertEqual(s1.status_code, status.HTTP_200_OK)
+        self.assertEqual(s1.data["total_billed"], 1000.0)
+        self.assertEqual(s1.data["total_collected"], 0.0)
+        self.assertEqual(s1.data["total_due"], 1000.0)
+
+        # 2. Record payment
+        p_resp = self.client.post(f"/api/invoices/{self.invoice.id}/record_payment/", {
+            "amount": "600.00",
+            "payment_method": self.payment_method.id,
+            "payment_date": "2026-10-05",
+        })
+        p_id = p_resp.data["payment"]["id"]
+
+        s2 = self.client.get("/api/invoices/summary/")
+        self.assertEqual(s2.data["total_collected"], 600.0)
+        self.assertEqual(s2.data["total_due"], 400.0)
+
+        # 3. Delete payment -> must immediately deduct from total_collected
+        del_p = self.client.delete(f"/api/payments/{p_id}/")
+        self.assertEqual(del_p.status_code, status.HTTP_204_NO_CONTENT)
+
+        s3 = self.client.get("/api/invoices/summary/")
+        self.assertEqual(s3.data["total_collected"], 0.0)
+        self.assertEqual(s3.data["total_due"], 1000.0)
+
+        # 4. Make bill fully paid (received bill), then delete the invoice
+        self.client.post(f"/api/invoices/{self.invoice.id}/record_payment/", {
+            "amount": "1000.00",
+            "payment_method": self.payment_method.id,
+            "payment_date": "2026-10-05",
+        })
+        s4 = self.client.get("/api/invoices/summary/")
+        self.assertEqual(s4.data["total_collected"], 1000.0)
+        self.assertEqual(s4.data["total_due"], 0.0)
+
+        del_inv = self.client.delete(f"/api/invoices/{self.invoice.id}/")
+        self.assertEqual(del_inv.status_code, status.HTTP_204_NO_CONTENT)
+
+        s5 = self.client.get("/api/invoices/summary/")
+        self.assertEqual(s5.data["total_billed"], 0.0)
+        self.assertEqual(s5.data["total_collected"], 0.0)
+        self.assertEqual(s5.data["total_due"], 0.0)
+
+
+class SecurityAndRBACPermissionsTest(APITestCase):
+    def setUp(self):
+        # 1. Admin
+        self.admin = User.objects.create_user("admin_sec", "admin_sec@test.com", "AdminPass123!", is_staff=True, is_superuser=True)
+        UserProfile.objects.create(user=self.admin, role=UserProfile.ROLE_ADMIN)
+
+        # 2. Accountant
+        self.accountant = User.objects.create_user("acc_sec", "acc_sec@test.com", "AccPass123!")
+        UserProfile.objects.create(user=self.accountant, role=UserProfile.ROLE_ACCOUNTANT)
+
+        # 3. Staff
+        self.staff = User.objects.create_user("staff_sec", "staff_sec@test.com", "StaffPass123!")
+        UserProfile.objects.create(user=self.staff, role=UserProfile.ROLE_STAFF)
+
+        # 4. Deactivated User
+        self.inactive_user = User.objects.create_user("inactive_user", "inactive@test.com", "InactivePass123!", is_active=False)
+        UserProfile.objects.create(user=self.inactive_user, role=UserProfile.ROLE_STAFF)
+
+        # Base billing objects
+        self.company = Company.objects.create(name="Security Test Co", is_default=True)
+        self.settings = Settings.objects.create(default_company=self.company)
+        self.client_entity = Client.objects.create(name="Secure Client")
+        self.invoice = Invoice.objects.create(
+            title="Secure Invoice",
+            client=self.client_entity,
+            company=self.company,
+            status="ISSUED",
+        )
+        self.payment = Payment.objects.create(
+            invoice=self.invoice,
+            amount=Decimal("500.00"),
+        )
+
+    def test_unauthenticated_api_and_pdf_endpoints_return_401(self):
+        """Unauthenticated requests to all API and PDF endpoints must return 401 Unauthorized"""
+        self.client.logout()
+
+        endpoints = [
+            f"/api/invoices/",
+            f"/api/invoices/{self.invoice.id}/",
+            f"/api/invoices/{self.invoice.id}/download_pdf/",
+            f"/api/invoices/{self.invoice.id}/preview_pdf/",
+            f"/api/payments/",
+            f"/api/payments/{self.payment.id}/download_receipt/",
+            f"/api/payments/{self.payment.id}/preview_receipt/",
+            f"/api/clients/",
+            f"/api/settings/",
+            f"/api/users/",
+            f"/api/audit-logs/",
+        ]
+        for url in endpoints:
+            resp = self.client.get(url)
+            self.assertEqual(
+                resp.status_code,
+                status.HTTP_401_UNAUTHORIZED,
+                f"Endpoint {url} did not return 401 for unauthenticated request (got {resp.status_code})"
+            )
+
+    def test_staff_cannot_delete_payment_or_modify_settings(self):
+        """STAFF role cannot delete payments or modify settings (returns 403)"""
+        self.client.force_authenticate(user=self.staff)
+
+        # Attempt to delete payment -> 403
+        del_p_resp = self.client.delete(f"/api/payments/{self.payment.id}/")
+        self.assertEqual(del_p_resp.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Attempt to modify settings -> 403
+        settings_resp = self.client.patch(f"/api/settings/{self.settings.id}/", {"default_nb_text": "Updated by staff"})
+        self.assertEqual(settings_resp.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Attempt to modify company -> 403
+        comp_resp = self.client.patch(f"/api/companies/{self.company.id}/", {"name": "Hacked Co"})
+        self.assertEqual(comp_resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_accountant_cannot_access_user_management_or_audit_logs(self):
+        """ACCOUNTANT role cannot access user management or audit logs (returns 403)"""
+        self.client.force_authenticate(user=self.accountant)
+
+        # User management list/create -> 403
+        users_resp = self.client.get("/api/users/")
+        self.assertEqual(users_resp.status_code, status.HTTP_403_FORBIDDEN)
+
+        create_user_resp = self.client.post("/api/users/", {
+            "username": "rogue_user",
+            "password": "Password123!",
+            "role": "ADMIN"
+        })
+        self.assertEqual(create_user_resp.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Audit logs -> 403
+        audit_resp = self.client.get("/api/audit-logs/")
+        self.assertEqual(audit_resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_deactivated_user_cannot_login(self):
+        """Deactivated user (is_active=False) cannot log in (returns 401)"""
+        resp = self.client.post("/api/auth/login/", {
+            "username": "inactive_user",
+            "password": "InactivePass123!"
+        })
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertIn("deactivated", resp.data.get("detail", "").lower())
+
+    def test_logout_blacklists_refresh_token(self):
+        """Logging out blacklists the refresh token so it cannot be used again"""
+        # 1. Login
+        login_resp = self.client.post("/api/auth/login/", {
+            "username": "admin_sec",
+            "password": "AdminPass123!"
+        })
+        self.assertEqual(login_resp.status_code, status.HTTP_200_OK)
+        refresh_token = login_resp.data["refresh"]
+        access_token = login_resp.data["access"]
+
+        # 2. Logout with refresh token
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        logout_resp = self.client.post("/api/auth/logout/", {"refresh": refresh_token})
+        self.assertEqual(logout_resp.status_code, status.HTTP_200_OK)
+
+        # 3. Try to use blacklisted refresh token to refresh -> 401
+        self.client.credentials()  # clear headers
+        refresh_resp = self.client.post("/api/auth/refresh/", {"refresh": refresh_token})
+        self.assertEqual(refresh_resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_audit_log_properly_created(self):
+        """AuditLog entries are created on login, invoice create, payment create, and payment delete"""
+        # 1. Login generates audit log
+        login_resp = self.client.post("/api/auth/login/", {
+            "username": "admin_sec",
+            "password": "AdminPass123!"
+        })
+        self.assertEqual(login_resp.status_code, status.HTTP_200_OK)
+        token = login_resp.data["access"]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        self.assertTrue(AuditLog.objects.filter(action=AuditLog.ACTION_LOGIN_SUCCESS, username="admin_sec").exists())
+
+        # 2. Invoice create generates audit log
+        inv_resp = self.client.post("/api/invoices/", {
+            "title": "Audited Bill",
+            "client": self.client_entity.id,
+            "company": self.company.id,
+            "status": "ISSUED",
+        })
+        self.assertEqual(inv_resp.status_code, status.HTTP_201_CREATED)
+        new_inv_id = inv_resp.data["id"]
+        self.assertTrue(AuditLog.objects.filter(action=AuditLog.ACTION_CREATE, model_name="Invoice", object_id=str(new_inv_id)).exists())
+
+        # 3. Payment delete generates audit log
+        del_resp = self.client.delete(f"/api/payments/{self.payment.id}/")
+        self.assertEqual(del_resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertTrue(AuditLog.objects.filter(action=AuditLog.ACTION_DELETE, model_name="Payment", object_id=str(self.payment.id)).exists())
+
 
