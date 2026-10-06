@@ -197,6 +197,7 @@ class AuthAndRoleAPITest(APITestCase):
             title="Invoice 1",
             client=self.billing_client,
             company=self.company,
+            status="DRAFT",
         )
 
     def test_jwt_login(self):
@@ -395,7 +396,11 @@ class Phase6PaymentAndDueTrackingTest(APITestCase):
         self.assertEqual(s4.data["total_due"], 0.0)
 
         del_inv = self.client.delete(f"/api/invoices/{self.invoice.id}/")
-        self.assertEqual(del_inv.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(del_inv.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Non-draft invoice must be CANCELLED instead
+        cancel_res = self.client.patch(f"/api/invoices/{self.invoice.id}/", {"status": "CANCELLED"})
+        self.assertEqual(cancel_res.status_code, status.HTTP_200_OK)
 
         s5 = self.client.get("/api/invoices/summary/")
         self.assertEqual(s5.data["total_billed"], 0.0)
@@ -554,5 +559,450 @@ class SecurityAndRBACPermissionsTest(APITestCase):
         del_resp = self.client.delete(f"/api/payments/{self.payment.id}/")
         self.assertEqual(del_resp.status_code, status.HTTP_204_NO_CONTENT)
         self.assertTrue(AuditLog.objects.filter(action=AuditLog.ACTION_DELETE, model_name="Payment", object_id=str(self.payment.id)).exists())
+
+
+class PdfPaginationAndLocalizationTest(TestCase):
+    """
+    Mandatory unit/integration tests verifying:
+    - 1 item: exactly 1 page
+    - 10 items
+    - 25 items: at least 2 pages, table header present on every page
+    - 50 items and 100 items: multi-page scaling
+    - Item with very long specification text (word-wrap)
+    - Invoice with Bengali name and address (Noto Sans Bengali, conjuncts)
+    - Signature / totals block ONLY on the last page
+    - 'Page X of Y' correct on every page
+    - Money receipt PDF generation with proper layout
+    """
+
+    def setUp(self):
+        self.company = Company.objects.create(
+            name="RAKTCH TECHNOLOGY & SOFTWARE",
+            address="Sector 6, Road 5, House 20, 7th floor, Uttara, Dhaka -1230, Bangladesh",
+            email="support@raktch.com",
+            phone="+8801581677077",
+            website="www.raktch.com",
+            is_default=True,
+        )
+        self.bank = BankAccount.objects.create(
+            company=self.company,
+            bank_name="Islami Bank PLC",
+            account_name="RAKTCH TECHNOLOGY AND SOFTWARE",
+            account_number="20502180100311104",
+            branch_name="Haji Camp, Ashkona, Dakkhin khan",
+            routing_number="125261995",
+            is_default=True,
+        )
+        self.client_entity = Client.objects.create(
+            name="Rose International",
+            contact_person="MD. Arif Hossain",
+            address="House 12, Road 4, Banani, Dhaka",
+            phone="+8801700000000",
+        )
+        self.template = InvoiceTemplate.objects.create(
+            name="Standard Template",
+            invoice_number_prefix="INV-",
+            is_default=True,
+        )
+
+    def _create_invoice(self, count, client_name="Rose International", client_address="House 12, Banani, Dhaka", title="INVOICE", custom_items=None):
+        inv = Invoice.objects.create(
+            company=self.company,
+            client=self.client_entity,
+            template=self.template,
+            title=title,
+            client_name=client_name,
+            client_address=client_address,
+            client_contact_person="MD. Arif Hossain",
+            bank_name=self.bank.bank_name,
+            account_name=self.bank.account_name,
+            account_number=self.bank.account_number,
+            branch_name=self.bank.branch_name,
+            routing_number=self.bank.routing_number,
+            status="ISSUED",
+        )
+        if custom_items:
+            for sl, (name, spec, qty, price) in enumerate(custom_items, 1):
+                InvoiceItem.objects.create(
+                    invoice=inv,
+                    sl=sl,
+                    item_name=name,
+                    technical_specification=spec,
+                    quantity=Decimal(str(qty)),
+                    unit_price=Decimal(str(price)),
+                )
+        else:
+            for i in range(1, count + 1):
+                InvoiceItem.objects.create(
+                    invoice=inv,
+                    sl=i,
+                    item_name=f"Software Service Module #{i}",
+                    technical_specification=f"Custom architecture, API integration and QA deployment #{i}",
+                    quantity=Decimal("1"),
+                    unit_price=Decimal("1500.00"),
+                )
+        inv.calculate_totals()
+        inv.refresh_from_db()
+        return inv
+
+    def test_one_item_fits_on_one_page(self):
+        """1-item invoice must fit on 1 page exactly as before"""
+        import io
+        from pypdf import PdfReader
+        from .pdf_service import generate_invoice_pdf
+
+        inv = self._create_invoice(1, title="1-Item Invoice")
+        pdf_bytes = generate_invoice_pdf(inv)
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+
+        self.assertEqual(len(reader.pages), 1, f"Expected 1 page, got {len(reader.pages)}")
+        page_text = reader.pages[0].extract_text()
+        self.assertIn("Page 1 of 1", page_text)
+        self.assertIn("Sub Total", page_text)
+        self.assertIn("Received by", page_text)
+        self.assertIn("Authorization", page_text)
+
+    def test_ten_items_pdf(self):
+        """10-item invoice generates clean valid PDF"""
+        import io
+        from pypdf import PdfReader
+        from .pdf_service import generate_invoice_pdf
+
+        inv = self._create_invoice(10, title="10-Item Invoice")
+        pdf_bytes = generate_invoice_pdf(inv)
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        self.assertGreaterEqual(len(reader.pages), 1)
+
+    def test_twenty_five_items_multipage_and_headers(self):
+        """
+        25 items: at least 2 pages.
+        - Table header present on every page
+        - Signature and totals block ONLY on the last page
+        - 'Page X of Y' correct on every page
+        """
+        import io
+        from pypdf import PdfReader
+        from .pdf_service import generate_invoice_pdf
+
+        inv = self._create_invoice(25, title="25-Item Invoice")
+        pdf_bytes = generate_invoice_pdf(inv)
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        total_pages = len(reader.pages)
+
+        self.assertGreaterEqual(total_pages, 2, f"Expected at least 2 pages, got {total_pages}")
+
+        for idx, page in enumerate(reader.pages):
+            text = page.extract_text()
+            # Table header row must be on every page
+            self.assertIn("Technical Specification", text, f"Table header missing on page {idx + 1}")
+            # Page X of Y must be correct on every page
+            self.assertIn(f"Page {idx + 1} of {total_pages}", text, f"Page number wrong on page {idx + 1}")
+            # Totals and signature block must NOT appear on prior pages
+            if idx < total_pages - 1:
+                self.assertNotIn("Received by", text, f"Signature block leaked to page {idx + 1}")
+                self.assertNotIn("Authorization", text, f"Signature block leaked to page {idx + 1}")
+
+        # Last page must contain totals and signature block
+        last_page_text = reader.pages[-1].extract_text()
+        self.assertIn("Received by", last_page_text)
+        self.assertIn("Authorization", last_page_text)
+        self.assertIn("Sub Total", last_page_text)
+
+    def test_fifty_and_hundred_items_scaling(self):
+        """50 and 100 items render cleanly across multiple pages"""
+        import io
+        from pypdf import PdfReader
+        from .pdf_service import generate_invoice_pdf
+
+        # 50 items
+        inv_50 = self._create_invoice(50, title="50-Item Invoice")
+        pdf_50 = generate_invoice_pdf(inv_50)
+        r_50 = PdfReader(io.BytesIO(pdf_50))
+        self.assertGreaterEqual(len(r_50.pages), 2)
+        self.assertIn("Received by", r_50.pages[-1].extract_text())
+
+        # 100 items
+        inv_100 = self._create_invoice(100, title="100-Item Invoice")
+        pdf_100 = generate_invoice_pdf(inv_100)
+        r_100 = PdfReader(io.BytesIO(pdf_100))
+        self.assertGreaterEqual(len(r_100.pages), 3)
+        self.assertIn("Received by", r_100.pages[-1].extract_text())
+
+    def test_very_long_specification_text_wrapping(self):
+        """Long specification text wraps downwards without crashing or overflowing table"""
+        import io
+        from pypdf import PdfReader
+        from .pdf_service import generate_invoice_pdf
+
+        long_spec = (
+            "Enterprise scalable multi-region microservice cluster with Kubernetes orchestration, "
+            "PostgreSQL read-replica streaming, Redis distributed caching, enterprise SSL/TLS offloading. "
+        ) * 5
+
+        inv = self._create_invoice(
+            2,
+            title="Long Specification Invoice",
+            custom_items=[
+                ("Cloud Migration", long_spec, 1, 50000.00),
+                ("Security Hardening", long_spec, 1, 30000.00),
+            ]
+        )
+        pdf_bytes = generate_invoice_pdf(inv)
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        self.assertGreaterEqual(len(reader.pages), 1)
+        self.assertIn("Kubernetes orchestration", reader.pages[0].extract_text())
+
+    def test_bengali_font_and_conjuncts(self):
+        """Invoice with Bengali name, address, items, and conjunct characters renders correctly"""
+        import io
+        from pypdf import PdfReader
+        from .pdf_service import generate_invoice_pdf
+
+        bengali_name = "রহিম অ্যান্ড ব্রাদার্স ট্রেডিং কোম্পানি"
+        bengali_address = "বাড়ি নং ৪২, রোড নং ৭, ধানমন্ডি, ঢাকা-১২০৫, বাংলাদেশ।"
+
+        inv = self._create_invoice(
+            3,
+            client_name=bengali_name,
+            client_address=bengali_address,
+            title="ইনভয়েস বিলিং স্টেটমেন্ট (INVOICE)",
+            custom_items=[
+                ("ওয়েব অ্যাপ্লিকেশন ডেভেলপমেন্ট", "পূর্ণাঙ্গ ব্যাকএন্ড সিস্টেম ও রিয়েল-টাইম ইনভেন্টরি ম্যানেজমেন্ট", 1, 60000.00),
+                ("সার্ভার ক্লাউড হোস্টিং", "২৪/৭ সিকিউরিটি মনিটরিং ও ব্যাকআপ সাপোর্ট", 1, 15000.00),
+                ("Consultation Services", "Enterprise cloud consulting (English & বাংলা)", 1, 10000.00),
+            ]
+        )
+        pdf_bytes = generate_invoice_pdf(inv)
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        self.assertGreaterEqual(len(reader.pages), 1)
+        first_page_text = reader.pages[0].extract_text()
+        self.assertTrue("রহিম" in first_page_text or "ব্রাদার্স" in first_page_text)
+        self.assertIn("Enterprise cloud consulting", first_page_text)
+
+    def test_money_receipt_pdf_generation(self):
+        """Money receipt PDF renders cleanly with branding, header, footer and Bengali font"""
+        import io
+        from pypdf import PdfReader
+        from .pdf_service import generate_money_receipt_pdf
+
+        method = PaymentMethod.objects.create(name="Bank Transfer")
+        inv = self._create_invoice(1, client_name="রহিম এন্টারপ্রাইজ", title="Service Invoice")
+        payment = Payment.objects.create(
+            invoice=inv,
+            amount=Decimal("1500.00"),
+            payment_method=method,
+            transaction_id="TXN-202610-9988",
+            note="Payment received with thanks (বাংলা নোট)",
+        )
+        pdf_bytes = generate_money_receipt_pdf(payment)
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        self.assertEqual(len(reader.pages), 1)
+        text = reader.pages[0].extract_text()
+        self.assertIn("OFFICIAL MONEY RECEIPT", text)
+        self.assertIn("Page 1 of 1", text)
+        self.assertIn(payment.receipt_number, text)
+
+
+from django.db.models.deletion import ProtectedError
+from django.db import transaction
+from django.utils import timezone
+from .models import ClientServicePrice, InvoiceSequence, LoginAttempt
+
+
+class Phase7ArchitectureAndSecurityFixesTest(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser(username="admin7", password="password7", email="admin7@test.com")
+        UserProfile.objects.create(user=self.admin, role=UserProfile.ROLE_ADMIN)
+
+        self.staff = User.objects.create_user(username="staff7", password="password7", email="staff7@test.com")
+        UserProfile.objects.create(user=self.staff, role=UserProfile.ROLE_STAFF)
+
+        self.company = Company.objects.create(
+            name="RAKTCH TECHNOLOGY & SOFTWARE",
+            address="Sector 6, Uttara, Dhaka",
+            email="support@raktch.com",
+            phone="+8801581677077",
+            website="www.raktch.com",
+            is_default=True,
+        )
+        self.client_entity = Client.objects.create(name="Beta Industries", contact_person="Hasan Ali", phone="01722222222")
+        self.service = Service.objects.create(
+            name="Web Hosting & Maintenance",
+            default_tech_specification="Monthly Cloud Hosting",
+            default_price=Decimal("1500.00"),
+        )
+        self.template = InvoiceTemplate.objects.create(
+            name="Standard Bill Template",
+            invoice_number_prefix="INV-",
+            is_default=True,
+        )
+
+    def test_cannot_delete_non_draft_invoice(self):
+        """Only DRAFT invoices can be deleted; ISSUED or PAID invoices are blocked with 400"""
+        self.client.force_authenticate(user=self.admin)
+        issued_inv = Invoice.objects.create(
+            title="Issued Bill",
+            client=self.client_entity,
+            company=self.company,
+            template=self.template,
+            status="ISSUED",
+        )
+        resp = self.client.delete(f"/api/invoices/{issued_inv.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Only DRAFT invoices can be deleted", str(resp.data))
+
+        # But DRAFT invoice deletion succeeds
+        draft_inv = Invoice.objects.create(
+            title="Draft Bill",
+            client=self.client_entity,
+            company=self.company,
+            template=self.template,
+            status="DRAFT",
+        )
+        draft_resp = self.client.delete(f"/api/invoices/{draft_inv.id}/")
+        self.assertEqual(draft_resp.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_cannot_delete_invoice_with_payments(self):
+        """Invoices with associated payments cannot be deleted (via API and protected in DB)"""
+        self.client.force_authenticate(user=self.admin)
+        inv = Invoice.objects.create(
+            title="Draft Bill With Payment",
+            client=self.client_entity,
+            company=self.company,
+            template=self.template,
+            status="DRAFT",
+        )
+        Payment.objects.create(invoice=inv, amount=Decimal("500.00"))
+
+        # API deletion blocked
+        resp = self.client.delete(f"/api/invoices/{inv.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("associated payments", str(resp.data))
+
+        # Direct ORM deletion raises ProtectedError
+        with self.assertRaises(ProtectedError):
+            inv.delete()
+
+    def test_staff_invoice_creation_enforces_draft(self):
+        """Staff creation enforces status=DRAFT without mutating request.data"""
+        self.client.force_authenticate(user=self.staff)
+        payload = {
+            "title": "Staff Submitted Bill",
+            "client": self.client_entity.id,
+            "company": self.company.id,
+            "template": self.template.id,
+            "status": "ISSUED",  # Staff tries to issue directly
+            "items": [
+                {
+                    "item_name": "Consulting",
+                    "technical_specification": "Advisory",
+                    "quantity": "1.00",
+                    "unit_price": "2000.00",
+                }
+            ],
+        }
+        resp = self.client.post("/api/invoices/", payload, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data["status"], "DRAFT")
+
+    def test_generate_monthly_bills_atomic_no_duplicate_and_clean_names(self):
+        """Batch generation is atomic, removes {idx}. from item_name, and skips duplicate clients"""
+        self.client.force_authenticate(user=self.admin)
+        ClientServicePrice.objects.create(
+            client=self.client_entity,
+            service=self.service,
+            custom_name="ERP Hosting",
+            custom_tech_specification="Dedicated Server Hosting",
+            custom_price=Decimal("2500.00"),
+            is_active=True,
+        )
+
+        # 1. First run generates the invoice
+        resp1 = self.client.post("/api/invoices/generate_monthly_bills/", {"billing_month": "November-2026"})
+        self.assertEqual(resp1.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(resp1.data["generated_invoices"]), 1)
+        self.assertEqual(len(resp1.data["skipped_clients"]), 0)
+
+        # Verify item_name does NOT contain "{idx}." prefix
+        inv = Invoice.objects.get(invoice_number=resp1.data["generated_invoices"][0])
+        item = inv.items.first()
+        self.assertFalse(item.item_name.startswith("1. "))
+        self.assertTrue(item.item_name.startswith("ERP Hosting"))
+
+        # 2. Second run for same month skips duplicate and reports skipped client
+        resp2 = self.client.post("/api/invoices/generate_monthly_bills/", {"billing_month": "November-2026"})
+        self.assertEqual(resp2.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(resp2.data["generated_invoices"]), 0)
+        self.assertEqual(len(resp2.data["skipped_clients"]), 1)
+        self.assertEqual(resp2.data["skipped_clients"][0]["client_id"], self.client_entity.id)
+
+    def test_login_lockout_per_username_and_proxy_forwarded_for(self):
+        """5 failed login attempts per username locks account for 15 mins behind proxy"""
+        target_username = "lockout_user"
+        User.objects.create_user(username=target_username, password="correct_password")
+
+        proxy_ip = "198.51.100.42"
+
+        for i in range(5):
+            res = self.client.post(
+                "/api/auth/login/",
+                {"username": target_username, "password": "wrong_password"},
+                HTTP_X_FORWARDED_FOR=proxy_ip,
+            )
+            if i < 4:
+                self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+            else:
+                self.assertEqual(res.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+        # 6th attempt is locked out with 429
+        locked_res = self.client.post(
+            "/api/auth/login/",
+            {"username": target_username, "password": "correct_password"},
+            HTTP_X_FORWARDED_FOR="198.51.100.99",  # Different IP still locked because lockout is per-username
+        )
+        self.assertEqual(locked_res.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertIn("temporarily locked", str(locked_res.data))
+
+        # A different user from the first IP is NOT locked
+        other_user = "other_user"
+        User.objects.create_user(username=other_user, password="correct_password")
+        other_res = self.client.post(
+            "/api/auth/login/",
+            {"username": other_user, "password": "correct_password"},
+            HTTP_X_FORWARDED_FOR=proxy_ip,
+        )
+        self.assertEqual(other_res.status_code, status.HTTP_200_OK)
+
+    def test_gapless_invoice_number_rollback(self):
+        """Failed invoice creation inside a transaction rolls back InvoiceSequence so no gap is left"""
+        prefix = "GAPLESS-"
+        date_today = timezone.now().date()
+        year_month = date_today.strftime("%Y%m")
+        sequence_key = f"{prefix}{year_month}-"
+
+        # Verify initial sequence state
+        seq = InvoiceSequence.objects.filter(prefix=sequence_key).first()
+        initial_num = seq.last_number if seq else 0
+
+        # Attempt invoice creation that fails inside a transaction
+        try:
+            with transaction.atomic():
+                inv = Invoice(
+                    title="Will Fail",
+                    client=self.client_entity,
+                    company=self.company,
+                    issue_date=date_today,
+                )
+                inv.invoice_number = Invoice.generate_next_invoice_number(prefix=prefix, date=date_today)
+                raise RuntimeError("Simulated DB or validation failure during transaction")
+        except RuntimeError:
+            pass
+
+        # Verify the sequence counter was rolled back to initial_num
+        seq_after = InvoiceSequence.objects.filter(prefix=sequence_key).first()
+        seq_num_after = seq_after.last_number if seq_after else 0
+        self.assertEqual(seq_num_after, initial_num)
+
+
 
 

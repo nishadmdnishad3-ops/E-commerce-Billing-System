@@ -4,9 +4,15 @@ const DJANGO_API_URL = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_A
 
 async function forwardRequest(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   const { path } = await params;
-  const targetPath = path.join("/");
-  const searchParams = req.nextUrl.search;
-  const targetUrl = `${DJANGO_API_URL}/${targetPath}/${searchParams}`;
+  const baseUrl = DJANGO_API_URL.replace(/\/+$/, "");
+  const cleanPath = path
+    .map((seg) => seg.replace(/^\/+|\/+$/g, ""))
+    .filter(Boolean)
+    .join("/");
+  const searchParams = req.nextUrl.search || "";
+
+  // Normalize target URL: exactly one trailing slash before query parameters, no double slashes
+  const targetUrl = `${baseUrl}/${cleanPath}/${searchParams}`;
 
   let accessToken = req.cookies.get("access_token")?.value;
   const refreshToken = req.cookies.get("refresh_token")?.value;
@@ -26,11 +32,28 @@ async function forwardRequest(req: NextRequest, { params }: { params: Promise<{ 
     body = rawBody.byteLength > 0 ? Buffer.from(rawBody) : null;
   }
 
+  // Use manual redirect handling so POST/PUT bodies are never stripped or converted to GET
   let res = await fetch(targetUrl, {
     method: req.method,
     headers,
     body,
+    redirect: "manual",
   });
+
+  if ([301, 302, 307, 308].includes(res.status)) {
+    const redirectLocation = res.headers.get("location");
+    if (redirectLocation) {
+      const redirectUrl = redirectLocation.startsWith("http")
+        ? redirectLocation
+        : `${baseUrl}${redirectLocation.startsWith("/") ? "" : "/"}${redirectLocation}`;
+      res = await fetch(redirectUrl, {
+        method: req.method,
+        headers,
+        body,
+        redirect: "manual",
+      });
+    }
+  }
 
   let newAccessToken: string | null = null;
   let newRefreshToken: string | null = null;
@@ -38,7 +61,7 @@ async function forwardRequest(req: NextRequest, { params }: { params: Promise<{ 
   // Auto-refresh token if 401 and refresh_token exists
   if (res.status === 401 && refreshToken) {
     try {
-      const refreshRes = await fetch(`${DJANGO_API_URL}/auth/refresh/`, {
+      const refreshRes = await fetch(`${baseUrl}/auth/refresh/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refresh: refreshToken }),
@@ -49,15 +72,31 @@ async function forwardRequest(req: NextRequest, { params }: { params: Promise<{ 
         newAccessToken = refreshData.access;
         newRefreshToken = refreshData.refresh || null;
 
-        // Retry original request with fresh access token
+        // Retry original request with fresh access token preserving method and body
         headers["Authorization"] = `Bearer ${newAccessToken}`;
         res = await fetch(targetUrl, {
           method: req.method,
           headers,
           body,
+          redirect: "manual",
         });
+
+        if ([301, 302, 307, 308].includes(res.status)) {
+          const redirectLocation = res.headers.get("location");
+          if (redirectLocation) {
+            const redirectUrl = redirectLocation.startsWith("http")
+              ? redirectLocation
+              : `${baseUrl}${redirectLocation.startsWith("/") ? "" : "/"}${redirectLocation}`;
+            res = await fetch(redirectUrl, {
+              method: req.method,
+              headers,
+              body,
+              redirect: "manual",
+            });
+          }
+        }
       }
-    } catch (e) {
+    } catch {
       // Refresh failed
     }
   }

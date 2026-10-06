@@ -1,13 +1,42 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8">
   <title>Money Receipt - {{ receipt_number }}</title>
   <style>
     @page {
       size: a4 portrait;
-      margin: 8mm 12mm 22mm 12mm;
+      margin-top: 36mm;
+      margin-bottom: 22mm;
+      margin-left: 12mm;
+      margin-right: 12mm;
+
+      @top-center {
+        content: element(pageHeader);
+        width: 100%;
+        vertical-align: top;
+      }
+
+      @bottom-center {
+        content: element(pageFooter);
+        width: 100%;
+        vertical-align: bottom;
+      }
+
+      /* xhtml2pdf fallback frame support */
+      @frame header_frame {
+        -pdf-frame-content: pdf_running_header;
+        top: 6mm;
+        margin-left: 12mm;
+        margin-right: 12mm;
+        height: 28mm;
+      }
+      @frame content_frame {
+        top: 36mm;
+        margin-left: 12mm;
+        margin-right: 12mm;
+        bottom: 22mm;
+      }
       @frame footer_frame {
         -pdf-frame-content: pdf_running_footer;
         bottom: 4mm;
@@ -17,8 +46,26 @@
       }
     }
 
+    {% if bengali_font_regular_b64 %}
+    @font-face {
+      font-family: 'Noto Sans Bengali';
+      font-style: normal;
+      font-weight: 400;
+      src: url('data:font/truetype;charset=utf-8;base64,{{ bengali_font_regular_b64 }}') format('truetype');
+    }
+    {% endif %}
+
+    {% if bengali_font_bold_b64 %}
+    @font-face {
+      font-family: 'Noto Sans Bengali';
+      font-style: normal;
+      font-weight: 700;
+      src: url('data:font/truetype;charset=utf-8;base64,{{ bengali_font_bold_b64 }}') format('truetype');
+    }
+    {% endif %}
+
     body {
-      font-family: Arial, Helvetica, sans-serif;
+      font-family: 'Noto Sans Bengali', Arial, Helvetica, sans-serif;
       font-size: 8.5pt;
       line-height: 1.3;
       color: #1e293b;
@@ -26,18 +73,13 @@
       padding: 0;
     }
 
-    #pdf_running_footer {
-      font-size: 7.5pt;
-      color: #64748b;
-      border-top: 0.5pt solid #cbd5e1;
-      padding-top: 2px;
-    }
-
     /* Header styling - Identical to invoice */
-    .receipt-header {
+    #pdf_running_header {
+      position: running(pageHeader);
+      width: 100%;
       border-bottom: 1.5pt solid #06b6d4;
-      padding-bottom: 6px;
-      margin-bottom: 8px;
+      padding-bottom: 4px;
+      margin-bottom: 0px;
     }
 
     .page-badge {
@@ -49,41 +91,62 @@
       padding: 2px 6px;
       border-radius: 3px;
     }
-
-    .company-logo {
-      height: 60px;
-      max-height: 62px;
-      margin-bottom: 2px;
+    .page-badge::before {
+      content: counter(page);
     }
 
+    .company-logo {
+      height: 48px;
+      max-height: 50px;
+      margin-bottom: 2px;
+    }
+    .company-title-fallback {
+      font-size: 13pt;
+      font-weight: bold;
+      color: #1e3a8a;
+      margin: 0 0 2px 0;
+    }
     .company-address {
-      font-size: 8.5pt;
+      font-size: 8pt;
       color: #475569;
       margin: 1px 0;
     }
-
     .company-contacts {
-      font-size: 8pt;
+      font-size: 7.5pt;
       color: #0284c7;
       margin: 1px 0;
+    }
+
+    /* Running Footer */
+    #pdf_running_footer {
+      position: running(pageFooter);
+      width: 100%;
+      font-size: 7.5pt;
+      color: #64748b;
+      border-top: 0.5pt solid #cbd5e1;
+      padding-top: 2px;
+    }
+    .page-counter::before {
+      content: "Page " counter(page) " of " counter(pages);
+    }
+    .xhtml-page-counter {
+      display: none;
     }
 
     /* Title */
     .receipt-title-box {
       text-align: center;
-      margin: 6px 0 8px 0;
+      margin: 4px 0 6px 0;
     }
-
     .receipt-title {
       display: inline-block;
-      font-size: 12pt;
+      font-size: 11pt;
       font-weight: bold;
       color: #0f172a;
       letter-spacing: 0.5px;
       border-bottom: 1.5pt solid #0f172a;
       padding-bottom: 2px;
     }
-
     .receipt-subtitle {
       font-size: 7.5pt;
       color: #64748b;
@@ -94,20 +157,20 @@
     .meta-table {
       width: 100%;
       margin-bottom: 8px;
+      border-collapse: collapse;
     }
-
     .meta-table td {
       vertical-align: top;
       padding: 0;
+      word-break: break-word;
+      overflow-wrap: break-word;
     }
-
     .meta-card {
       background-color: #f8fafc;
       border: 0.5pt solid #cbd5e1;
       padding: 6px 10px;
       border-radius: 4px;
     }
-
     .meta-card h4 {
       margin: 0 0 4px 0;
       font-size: 8pt;
@@ -122,8 +185,9 @@
     table.data-table {
       width: 100%;
       margin-bottom: 8px;
+      border-collapse: collapse;
+      table-layout: fixed;
     }
-
     table.data-table th {
       background-color: #f8fafc;
       border: 0.5pt solid #334155;
@@ -132,82 +196,71 @@
       color: #0f172a;
       padding: 4px 6px;
     }
-
     table.data-table td {
       border: 0.5pt solid #334155;
       padding: 4px 6px;
       font-size: 8pt;
       vertical-align: top;
+      word-break: break-word;
+      overflow-wrap: break-word;
     }
 
-    .text-center {
-      text-align: center;
-    }
-
-    .text-right {
-      text-align: right;
-    }
-
-    .font-bold {
-      font-weight: bold;
-    }
-
-    .font-mono {
-      font-family: "Courier New", Courier, monospace;
-    }
+    .text-center { text-align: center; }
+    .text-right { text-align: right; }
+    .font-bold { font-weight: bold; }
+    .font-mono { font-family: "Courier New", Courier, monospace; }
 
     /* In Words Banner */
     .in-words-box {
-      background-color: #f0fdf4;
-      border: 0.5pt solid #86efac;
+      background-color: #f1f5f9;
+      border-left: 3pt solid #0284c7;
       padding: 5px 8px;
       margin-bottom: 8px;
-      border-radius: 4px;
       font-size: 8pt;
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
-
     .in-words-title {
       font-weight: bold;
-      color: #166534;
+      color: #0369a1;
       text-transform: uppercase;
-      font-size: 7pt;
-      letter-spacing: 0.5px;
+      font-size: 7.5pt;
+      margin-bottom: 1px;
     }
-
     .in-words-val {
-      font-weight: bold;
-      color: #14532d;
+      font-weight: 600;
+      color: #0f172a;
       font-style: italic;
-      margin-top: 1px;
     }
 
-    /* Summary & Settlement Grid */
+    /* Summary & Settlement */
     .summary-box {
       width: 100%;
       margin-bottom: 8px;
+      border-collapse: collapse;
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
-
     .summary-box td {
-      vertical-align: top;
       padding: 0;
+      vertical-align: top;
+      word-break: break-word;
+      overflow-wrap: break-word;
     }
-
     .settlement-card {
-      background-color: #ffffff;
-      border: 0.5pt solid #94a3b8;
+      border: 0.5pt solid #cbd5e1;
       border-radius: 4px;
+      overflow: hidden;
     }
-
     .settlement-table {
       width: 100%;
+      border-collapse: collapse;
     }
-
     .settlement-table td {
-      padding: 3.5px 8px;
-      border-bottom: 0.5pt solid #e2e8f0;
+      padding: 4px 8px;
       font-size: 7.5pt;
+      border-bottom: 0.5pt solid #e2e8f0;
     }
-
     .settlement-table tr:last-child td {
       border-bottom: none;
     }
@@ -219,27 +272,28 @@
       font-weight: bold;
       color: #0f172a;
     }
+
+    .signature-container {
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
   </style>
 </head>
-
 <body>
 
-  <!-- Top Header (Table Layout for universal compatibility) -->
-  <div class="receipt-header">
+  <!-- Top Header (repeats on every page via CSS GCPM running elements) -->
+  <div id="pdf_running_header">
     <table style="width: 100%; border: none;" cellpadding="0" cellspacing="0">
       <tr>
         <td style="width: 10%; vertical-align: top; text-align: left; border: none; padding: 0;">
-          <span class="page-badge">MR</span>
+          <span class="page-badge"></span>
         </td>
         <td style="width: 80%; vertical-align: top; text-align: center; border: none; padding: 0;">
           {% if logo_base64 %}
-          <img src="data:image/png;base64,{{ logo_base64 }}" alt="Logo" class="company-logo" />
-          {% elif logo_url %}
-          <img src="{{ logo_url }}" alt="Logo" class="company-logo" />
+            <img src="data:image/png;base64,{{ logo_base64 }}" alt="Logo" class="company-logo" />
           {% else %}
-          <h1 style="font-size: 14pt; margin: 0; color: #1e3a8a;">{{ invoice.company_name|default:"RAKTCH TECHNOLOGY & SOFTWARE" }}</h1>
+            <div class="company-title-fallback">{{ invoice.company_name|default:"RAKTCH TECHNOLOGY & SOFTWARE" }}</div>
           {% endif %}
-
           <div class="company-address">{{ invoice.company_address }}</div>
           <div class="company-contacts">
             <span>{{ invoice.company_website }}</span> &nbsp;|&nbsp;
@@ -252,101 +306,126 @@
     </table>
   </div>
 
-  <!-- Receipt Title -->
-  <div class="receipt-title-box">
-    <div class="receipt-title">MONEY RECEIPT</div>
-    <div class="receipt-subtitle">Official Payment Confirmation & Settlement Voucher</div>
+  <!-- Running Page Footer (fixed at the bottom of every page) -->
+  <div id="pdf_running_footer">
+    <table style="width: 100%; border: none; margin-bottom: 2px;" cellpadding="0" cellspacing="0">
+      <tr>
+        <td style="width: 55%; vertical-align: middle; text-align: left; border: none; padding: 0;">
+          {% if qr_base64 %}
+            <img src="data:image/png;base64,{{ qr_base64 }}" alt="QR" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 5px;" />
+          {% endif %}
+          <span style="font-size: 7.5pt; color: #64748b; vertical-align: middle;">
+            Scan to verify receipt authenticity
+          </span>
+        </td>
+        <td style="width: 45%; vertical-align: middle; text-align: right; border: none; padding: 0;">
+          <span style="font-size: 8pt; font-weight: bold; color: #0284c7;">
+            {{ invoice.company_website|default:"www.raktch.com" }}
+          </span>
+        </td>
+      </tr>
+    </table>
+    <table style="width: 100%; border: none; border-top: 0.5pt solid #e2e8f0; padding-top: 2px;" cellpadding="0" cellspacing="0">
+      <tr>
+        <td style="width: 70%; text-align: left; border: none; padding: 0; font-size: 7.5pt; color: #64748b;">
+          {{ invoice.company_name|default:"RAKTCH Technology & Software" }} | Money Receipt #{{ receipt_number }} (Inv: #{{ invoice.invoice_number }})
+        </td>
+        <td style="width: 30%; text-align: right; border: none; padding: 0; font-size: 7.5pt; color: #64748b;" class="page-counter">
+          <span class="xhtml-page-counter">Page <pdf:pagenumber> of <pdf:pagecount></span>
+        </td>
+      </tr>
+    </table>
   </div>
 
-  <!-- Meta Information (Two-column layout) -->
+  <!-- Title Section -->
+  <div class="receipt-title-box">
+    <span class="receipt-title">OFFICIAL MONEY RECEIPT</span>
+    <div class="receipt-subtitle">Acknowledgment of Payment Received with Thanks</div>
+  </div>
+
+  <!-- Meta Details Section: 2 Columns -->
   <table class="meta-table" cellpadding="0" cellspacing="0">
     <tr>
-      <!-- Left: Receipt Details -->
-      <td style="width: 49%;">
+      <!-- Column 1: Received From Client -->
+      <td style="width: 50%; padding-right: 6px;">
         <div class="meta-card">
-          <h4>Receipt Particulars</h4>
-          <table style="width: 100%; border: none;" cellpadding="1.5" cellspacing="0">
-            <tr>
-              <td style="width: 100px; color: #64748b; font-weight: 600; font-size: 7.5pt; border: none;">Receipt No:</td>
-              <td style="font-weight: bold; font-family: monospace; color: #0284c7; font-size: 8pt; border: none;">{{ receipt_number }}</td>
-            </tr>
-            <tr>
-              <td style="width: 100px; color: #64748b; font-weight: 600; font-size: 7.5pt; border: none;">Receipt Date:</td>
-              <td style="font-weight: bold; color: #0f172a; font-size: 8pt; border: none;">{{ payment.payment_date }}</td>
-            </tr>
-            <tr>
-              <td style="width: 100px; color: #64748b; font-weight: 600; font-size: 7.5pt; border: none;">Payment Method:</td>
-              <td style="font-weight: bold; color: #0f172a; font-size: 8pt; border: none;">{{ payment.payment_method.name|default:"Cash" }}</td>
-            </tr>
-            {% if payment.transaction_id %}
-            <tr>
-              <td style="width: 100px; color: #64748b; font-weight: 600; font-size: 7.5pt; border: none;">Transaction ID:</td>
-              <td style="font-weight: bold; font-family: monospace; color: #0f172a; font-size: 8pt; border: none;">{{ payment.transaction_id }}</td>
-            </tr>
-            {% endif %}
-          </table>
+          <h4>Received From (Client)</h4>
+          <div style="font-size: 9pt; font-weight: bold; color: #0f172a; margin-bottom: 2px;">
+            {{ invoice.client_name }}
+          </div>
+          {% if invoice.client_address %}
+          <div style="font-size: 7.5pt; color: #475569; margin-bottom: 2px; line-height: 1.25;">
+            {{ invoice.client_address }}
+          </div>
+          {% endif %}
+          {% if invoice.client_contact_person %}
+          <div style="font-size: 7.5pt; color: #64748b;">
+            Attn: {{ invoice.client_contact_person }}
+          </div>
+          {% endif %}
         </div>
       </td>
 
-      <td style="width: 2%;"></td>
-
-      <!-- Right: Client & Invoice Info -->
-      <td style="width: 49%;">
+      <!-- Column 2: Receipt & Reference Info -->
+      <td style="width: 50%; padding-left: 6px;">
         <div class="meta-card">
-          <h4>Customer & Bill Reference</h4>
-          <table style="width: 100%; border: none;" cellpadding="1.5" cellspacing="0">
+          <h4>Receipt Particulars</h4>
+          <table style="width: 100%; border: none; font-size: 7.5pt;" cellpadding="1" cellspacing="0">
             <tr>
-              <td style="width: 100px; color: #64748b; font-weight: 600; font-size: 7.5pt; border: none;">Received From:</td>
-              <td style="font-weight: bold; color: #0f172a; font-size: 8pt; border: none;">{{ invoice.client_name }}</td>
+              <td style="color: #64748b; width: 45%;">Receipt Number:</td>
+              <td class="font-mono font-bold" style="color: #0369a1;">{{ receipt_number }}</td>
             </tr>
-            {% if invoice.client_contact_person %}
             <tr>
-              <td style="width: 100px; color: #64748b; font-weight: 600; font-size: 7.5pt; border: none;">Attention:</td>
-              <td style="color: #0f172a; font-size: 8pt; border: none;">{{ invoice.client_contact_person }}</td>
+              <td style="color: #64748b;">Payment Date:</td>
+              <td style="font-weight: 600;">{{ payment.payment_date }}</td>
             </tr>
-            {% endif %}
             <tr>
-              <td style="width: 100px; color: #64748b; font-weight: 600; font-size: 7.5pt; border: none;">Against Bill #:</td>
-              <td style="font-weight: bold; font-family: monospace; color: #0f172a; font-size: 8pt; border: none;">{{ invoice.invoice_number }}</td>
+              <td style="color: #64748b;">Invoice Reference:</td>
+              <td class="font-mono font-bold" style="color: #0f172a;">#{{ invoice.invoice_number }}</td>
             </tr>
-            {% if invoice.billing_month %}
             <tr>
-              <td style="width: 100px; color: #64748b; font-weight: 600; font-size: 7.5pt; border: none;">Billing Month:</td>
-              <td style="color: #0f172a; font-size: 8pt; border: none;">{{ invoice.billing_month }}</td>
+              <td style="color: #64748b;">Payment Method:</td>
+              <td style="font-weight: 600; text-transform: uppercase;">
+                {{ payment.payment_method }}
+                {% if payment.reference_number %}
+                <span style="font-size: 7pt; color: #64748b;">(Ref: {{ payment.reference_number }})</span>
+                {% endif %}
+              </td>
             </tr>
-            {% endif %}
           </table>
         </div>
       </td>
     </tr>
   </table>
 
-  <!-- Particulars Table -->
-  <table class="data-table" cellpadding="3.5" cellspacing="0">
+  <!-- Receipt Data Breakdown Table -->
+  <table class="data-table" cellpadding="4" cellspacing="0">
     <thead>
       <tr>
-        <th class="text-center" style="width: 30px;">SL</th>
-        <th style="text-align: left;">Description / Payment Towards</th>
-        <th style="width: 110px; text-align: left;">Method / Channel</th>
-        <th style="width: 120px; text-align: left;">Reference / Txn ID</th>
-        <th class="text-right" style="width: 110px;">Amount (Tk)</th>
+        <th class="text-center" style="width: 32px;">SL</th>
+        <th style="text-align: left;">Payment Description / Particulars</th>
+        <th class="text-center" style="width: 90px;">Method</th>
+        <th class="text-center" style="width: 90px;">Txn / Ref ID</th>
+        <th class="text-right" style="width: 100px;">Amount Received</th>
       </tr>
     </thead>
     <tbody>
       <tr>
-        <td class="text-center">1</td>
+        <td class="text-center">01</td>
         <td>
-          <b>Payment for {{ invoice.title }}</b>
-          {% if payment.note %}
-          <div style="font-size: 7pt; color: #64748b; margin-top: 2px;">Note: {{ payment.note }}</div>
-          {% endif %}
+          <b>Payment against Invoice #{{ invoice.invoice_number }}</b>
+          <div style="font-size: 7pt; color: #475569; margin-top: 1px;">
+            Bill Title: {{ invoice.title }}
+          </div>
         </td>
-        <td>{{ payment.payment_method.name|default:"Cash / Direct" }}</td>
-        <td class="font-mono" style="font-size: 7.5pt;">{{ payment.transaction_id|default:"N/A" }}</td>
-        <td class="text-right font-mono font-bold" style="color: #15803d;">{{ payment.amount|floatformat:2 }}</td>
+        <td class="text-center" style="font-weight: 600;">{{ payment.payment_method }}</td>
+        <td class="text-center font-mono" style="font-size: 7.5pt;">{{ payment.reference_number|default:"-" }}</td>
+        <td class="text-right font-mono font-bold" style="font-size: 8.5pt; color: #0f172a;">
+          {{ invoice.currency_symbol }} {{ payment.amount|floatformat:2 }}
+        </td>
       </tr>
       <tr style="background-color: #f8fafc; font-weight: bold;">
-        <td colspan="4" class="text-right" style="border-right: none; text-transform: uppercase; font-size: 7.5pt; letter-spacing: 0.5px;">
+        <td colspan="4" class="text-right" style="text-transform: uppercase; font-size: 7.5pt; letter-spacing: 0.5px;">
           Total Received Amount
         </td>
         <td class="text-right font-mono font-bold" style="color: #166534; font-size: 8.5pt;">
@@ -367,7 +446,7 @@
     <tr>
       <!-- Notes & Terms -->
       <td style="width: 48%; vertical-align: top;">
-        <div class="meta-card" style="min-height: 85px;">
+        <div class="meta-card" style="min-height: 80px;">
           <h4>Payment Notes & Remarks</h4>
           <p style="margin: 0; font-size: 7.5pt; color: #475569; line-height: 1.35;">
             {% if payment.note %}
@@ -376,7 +455,7 @@
             Payment received with thanks. Please preserve this computer-generated receipt for future accounting reference.
             {% endif %}
           </p>
-          <div style="margin-top: 8px; font-size: 7.5pt; color: #64748b;">
+          <div style="margin-top: 6px; font-size: 7.5pt; color: #64748b;">
             Current Status:
             <b style="color: {% if invoice.status == 'PAID' %}#16a34a{% else %}#ea580c{% endif %};">
               {{ invoice.status }}
@@ -417,63 +496,33 @@
     </tr>
   </table>
 
-  <!-- Centered Large Official Received Stamp -->
+  <!-- Centered Official Received Stamp -->
   {% if stamp_base64 %}
-  <div style="text-align: center; margin: 10px 0 8px 0;">
-    <img src="data:image/png;base64,{{ stamp_base64 }}" alt="Official Received Stamp" style="width: 220px; height: auto;" />
+  <div style="text-align: center; margin: 8px 0 6px 0; page-break-inside: avoid; break-inside: avoid;">
+    <img src="data:image/png;base64,{{ stamp_base64 }}" alt="Official Received Stamp" style="width: 200px; height: auto;" />
   </div>
   {% endif %}
 
-  <!-- Signatures Block (Table Layout for Side-by-Side positioning) -->
-  <table style="width: 100%; border: none; margin-top: 35px; margin-bottom: 6px;" cellpadding="0" cellspacing="0">
-    <tr>
-      <td style="width: 38%; text-align: center; vertical-align: bottom; border: none; padding: 0;">
-        <div style="height: 45px; line-height: 45px; font-size: 1pt;">&nbsp;</div>
-        <div class="sign-line">Received By / Customer Signature</div>
-      </td>
-      <td style="width: 24%; border: none; padding: 0;"></td>
-      <td style="width: 38%; text-align: center; vertical-align: bottom; border: none; padding: 0;">
-        {% if signature_base64 %}
-        <img src="data:image/png;base64,{{ signature_base64 }}" alt="Signature" style="height: 38px; margin-bottom: 2px;" />
-        {% else %}
-        <div style="height: 45px; line-height: 45px; font-size: 1pt;">&nbsp;</div>
-        {% endif %}
-        <div class="sign-line">{{ invoice.authorization_label|default:"Authorized Signature" }}</div>
-      </td>
-    </tr>
-  </table>
-
-  <!-- Running Page Footer (pinned to absolute bottom of page) -->
-  <div id="pdf_running_footer">
-    <table style="width: 100%; border: none; margin-bottom: 2px;" cellpadding="0" cellspacing="0">
+  <!-- Signatures Block -->
+  <div class="signature-container">
+    <table style="width: 100%; border: none; margin-top: 25px; margin-bottom: 4px;" cellpadding="0" cellspacing="0">
       <tr>
-        <td style="width: 55%; vertical-align: middle; text-align: left; border: none; padding: 0;">
-          {% if qr_base64 %}
-          <img src="data:image/png;base64,{{ qr_base64 }}" alt="QR" style="width: 26px; height: 26px; vertical-align: middle; margin-right: 5px;" />
+        <td style="width: 38%; text-align: center; vertical-align: bottom; border: none; padding: 0;">
+          <div style="height: 38px; line-height: 38px; font-size: 1pt;">&nbsp;</div>
+          <div class="sign-line">Received By / Customer Signature</div>
+        </td>
+        <td style="width: 24%; border: none; padding: 0;"></td>
+        <td style="width: 38%; text-align: center; vertical-align: bottom; border: none; padding: 0;">
+          {% if signature_base64 %}
+            <img src="data:image/png;base64,{{ signature_base64 }}" alt="Signature" style="height: 36px; margin-bottom: 2px;" />
+          {% else %}
+            <div style="height: 38px; line-height: 38px; font-size: 1pt;">&nbsp;</div>
           {% endif %}
-          <span style="font-size: 7.5pt; color: #64748b; vertical-align: middle;">
-            Scan to verify receipt authenticity
-          </span>
-        </td>
-        <td style="width: 45%; vertical-align: middle; text-align: right; border: none; padding: 0;">
-          <span style="font-size: 8pt; font-weight: bold; color: #0284c7;">
-            {{ invoice.company_website|default:"www.raktch.com" }}
-          </span>
-        </td>
-      </tr>
-    </table>
-    <table style="width: 100%; border: none; border-top: 0.5pt solid #e2e8f0; padding-top: 2px;" cellpadding="0" cellspacing="0">
-      <tr>
-        <td style="width: 70%; text-align: left; border: none; padding: 0; font-size: 7.5pt; color: #64748b;">
-          RAKTCH Technology & Software | Money Receipt #{{ receipt_number }} (Inv: #{{ invoice.invoice_number }})
-        </td>
-        <td style="width: 30%; text-align: right; border: none; padding: 0; font-size: 7.5pt; color: #64748b;">
-          Page <pdf:pagenumber> of <pdf:pagecount>
+          <div class="sign-line">{{ invoice.authorization_label|default:"Authorized Signature" }}</div>
         </td>
       </tr>
     </table>
   </div>
 
 </body>
-
 </html>

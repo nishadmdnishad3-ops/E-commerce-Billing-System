@@ -404,31 +404,32 @@ class Invoice(models.Model):
         self.qr_code.save(file_name, ContentFile(buffer.getvalue()), save=False)
 
     def save(self, *args, **kwargs):
-        if self.issue_date and isinstance(self.issue_date, datetime.datetime):
-            self.issue_date = self.issue_date.date()
-        if self.due_date and isinstance(self.due_date, datetime.datetime):
-            self.due_date = self.due_date.date()
+        with transaction.atomic():
+            if self.issue_date and isinstance(self.issue_date, datetime.datetime):
+                self.issue_date = self.issue_date.date()
+            if self.due_date and isinstance(self.due_date, datetime.datetime):
+                self.due_date = self.due_date.date()
 
-        self.populate_snapshots()
-        if not self.invoice_number:
-            prefix = self.template.invoice_number_prefix if self.template else "INV-"
-            self.invoice_number = self.generate_next_invoice_number(prefix=prefix, date=self.issue_date)
+            self.populate_snapshots()
+            if not self.invoice_number:
+                prefix = self.template.invoice_number_prefix if self.template else "INV-"
+                self.invoice_number = self.generate_next_invoice_number(prefix=prefix, date=self.issue_date)
 
-        # Initial math check
-        sub_total_val = Decimal(str(self.sub_total or "0.00")).quantize(Decimal("0.01"))
-        discount_val = Decimal(str(self.discount or "0.00")).quantize(Decimal("0.01"))
-        vat_val = Decimal(str(self.vat_amount or "0.00")).quantize(Decimal("0.01"))
-        advance_val = Decimal(str(self.advance_amount or "0.00")).quantize(Decimal("0.01"))
-        paid_val = Decimal(str(self.paid_amount or "0.00")).quantize(Decimal("0.01"))
+            # Initial math check
+            sub_total_val = Decimal(str(self.sub_total or "0.00")).quantize(Decimal("0.01"))
+            discount_val = Decimal(str(self.discount or "0.00")).quantize(Decimal("0.01"))
+            vat_val = Decimal(str(self.vat_amount or "0.00")).quantize(Decimal("0.01"))
+            advance_val = Decimal(str(self.advance_amount or "0.00")).quantize(Decimal("0.01"))
+            paid_val = Decimal(str(self.paid_amount or "0.00")).quantize(Decimal("0.01"))
 
-        tax_base = max(sub_total_val - discount_val, Decimal("0.00"))
-        self.payable_amount = tax_base + vat_val
-        self.due_amount = max(self.payable_amount - advance_val - paid_val, Decimal("0.00"))
+            tax_base = max(sub_total_val - discount_val, Decimal("0.00"))
+            self.payable_amount = tax_base + vat_val
+            self.due_amount = max(self.payable_amount - advance_val - paid_val, Decimal("0.00"))
 
-        if not self.qr_code:
-            self.generate_qr_code()
+            if not self.qr_code:
+                self.generate_qr_code()
 
-        super().save(*args, **kwargs)
+            super().save(*args, **kwargs)
 
 
 class InvoiceItem(models.Model):
@@ -447,26 +448,27 @@ class InvoiceItem(models.Model):
     def __str__(self):
         return f"{self.sl}. {self.item_name} ({self.total})"
 
-    def save(self, *args, **kwargs):
+    def save(self, *args, skip_invoice_recalc=False, **kwargs):
         qty = Decimal(str(self.quantity or "1.00"))
         price = Decimal(str(self.unit_price or "0.00"))
         self.total = (qty * price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         super().save(*args, **kwargs)
-        # Recalculate invoice totals
-        self.invoice.calculate_totals()
-        Invoice.objects.filter(pk=self.invoice.pk).update(
-            sub_total=self.invoice.sub_total,
-            vat_amount=self.invoice.vat_amount,
-            payable_amount=self.invoice.payable_amount,
-            advance_amount=self.invoice.advance_amount,
-            paid_amount=self.invoice.paid_amount,
-            due_amount=self.invoice.due_amount,
-            status=self.invoice.status,
-        )
+        if not skip_invoice_recalc:
+            # Recalculate invoice totals
+            self.invoice.calculate_totals()
+            Invoice.objects.filter(pk=self.invoice.pk).update(
+                sub_total=self.invoice.sub_total,
+                vat_amount=self.invoice.vat_amount,
+                payable_amount=self.invoice.payable_amount,
+                advance_amount=self.invoice.advance_amount,
+                paid_amount=self.invoice.paid_amount,
+                due_amount=self.invoice.due_amount,
+                status=self.invoice.status,
+            )
 
 
 class Payment(models.Model):
-    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="payments")
+    invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name="payments")
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     payment_date = models.DateField(default=timezone.localdate)
     payment_method = models.ForeignKey(PaymentMethod, on_delete=models.SET_NULL, null=True, blank=True)
@@ -602,7 +604,7 @@ class AuditLog(models.Model):
 
 
 class LoginAttempt(models.Model):
-    username = models.CharField(max_length=150, db_index=True)
+    username = models.CharField(max_length=150, unique=True, db_index=True)
     ip_address = models.CharField(max_length=45, blank=True)
     failed_attempts = models.PositiveIntegerField(default=0)
     locked_until = models.DateTimeField(null=True, blank=True)

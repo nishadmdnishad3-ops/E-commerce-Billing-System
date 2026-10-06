@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
     });
 
     response.cookies.set("user_role", user.role || "STAFF", {
-      httpOnly: false,
+      httpOnly: true,
       secure: isProduction,
       sameSite: "lax",
       path: "/",

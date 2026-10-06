@@ -6,6 +6,47 @@ from django.template.loader import render_to_string
 from django.conf import settings
 from .models import Invoice, Payment
 
+_FONT_CACHE = {}
+
+
+def _init_gtk_env():
+    """Ensure GTK3 binaries are discoverable on Windows for WeasyPrint"""
+    if os.name == "nt":
+        candidates = [
+            settings.BASE_DIR / "gtk3" / "bin",
+            settings.BASE_DIR.parent / "backend" / "gtk3" / "bin",
+            r"C:\Program Files\GTK3-Runtime Win64\bin",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                c_str = str(candidate)
+                if hasattr(os, "add_dll_directory"):
+                    try:
+                        os.add_dll_directory(c_str)
+                    except Exception:
+                        pass
+                if c_str not in os.environ.get("PATH", ""):
+                    os.environ["PATH"] = c_str + os.pathsep + os.environ.get("PATH", "")
+                break
+
+
+def get_bengali_font_base64():
+    """Loads and caches base64-encoded NotoSansBengali fonts for embedding in PDFs"""
+    if "regular" not in _FONT_CACHE:
+        font_dir = settings.BASE_DIR / "billing" / "static" / "billing" / "fonts"
+        reg_path = font_dir / "NotoSansBengali-Regular.ttf"
+        bold_path = font_dir / "NotoSansBengali-Bold.ttf"
+        reg_b64, bold_b64 = "", ""
+        if reg_path.exists():
+            with open(reg_path, "rb") as f:
+                reg_b64 = base64.b64encode(f.read()).decode("utf-8")
+        if bold_path.exists():
+            with open(bold_path, "rb") as f:
+                bold_b64 = base64.b64encode(f.read()).decode("utf-8")
+        _FONT_CACHE["regular"] = reg_b64
+        _FONT_CACHE["bold"] = bold_b64 or reg_b64
+    return _FONT_CACHE["regular"], _FONT_CACHE["bold"]
+
 
 def image_to_base64(file_field_or_path):
     """Converts local file or FieldFile to base64 string for embedded PDF rendering"""
@@ -100,6 +141,9 @@ def generate_invoice_pdf(invoice: Invoice) -> bytes:
 
     total_qty = sum((item.quantity for item in invoice.items.all()), 0)
 
+    _init_gtk_env()
+    reg_font_b64, bold_font_b64 = get_bengali_font_base64()
+
     context = {
         "invoice": invoice,
         "total_quantity": total_qty,
@@ -107,6 +151,8 @@ def generate_invoice_pdf(invoice: Invoice) -> bytes:
         "signature_base64": sig_base64,
         "qr_base64": qr_base64,
         "verification_url": verification_url,
+        "bengali_font_regular_b64": reg_font_b64,
+        "bengali_font_bold_b64": bold_font_b64,
     }
 
     html_content = render_to_string("billing/invoice_pdf.html", context)
@@ -252,6 +298,9 @@ def generate_money_receipt_pdf(payment: Payment) -> bytes:
     if stamp_path.exists():
         stamp_base64 = image_to_base64(str(stamp_path))
 
+    _init_gtk_env()
+    reg_font_b64, bold_font_b64 = get_bengali_font_base64()
+
     context = {
         "payment": payment,
         "invoice": invoice,
@@ -264,6 +313,8 @@ def generate_money_receipt_pdf(payment: Payment) -> bytes:
         "qr_base64": qr_base64,
         "verification_url": verification_url,
         "stamp_base64": stamp_base64,
+        "bengali_font_regular_b64": reg_font_b64,
+        "bengali_font_bold_b64": bold_font_b64,
     }
 
     html_content = render_to_string("billing/money_receipt_pdf.html", context)

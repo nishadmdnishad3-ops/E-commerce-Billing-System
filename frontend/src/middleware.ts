@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-export function middleware(request: NextRequest) {
+const DJANGO_API_URL = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api";
+
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   const accessToken = request.cookies.get("access_token")?.value;
@@ -27,13 +29,46 @@ export function middleware(request: NextRequest) {
 
   // Admin-only page protection
   const adminOnlyRoutes = ["/users", "/audit-logs", "/settings"];
-  const isAdminRoute = adminOnlyRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`));
+  const isAdminRoute = adminOnlyRoutes.some(
+    (route) => pathname === route || pathname.startsWith(`${route}/`)
+  );
 
-  if (isAdminRoute && userRole && userRole !== "ADMIN") {
-    // Non-admin attempting to access Admin pages -> redirect to Dashboard
-    const redirectUrl = new URL("/", request.url);
-    redirectUrl.searchParams.set("error", "AccessDenied");
-    return NextResponse.redirect(redirectUrl);
+  if (isAdminRoute) {
+    // Strictly deny when userRole !== "ADMIN" (including undefined / missing)
+    if (!userRole || userRole !== "ADMIN") {
+      const redirectUrl = new URL("/", request.url);
+      redirectUrl.searchParams.set("error", "AccessDenied");
+      return NextResponse.redirect(redirectUrl);
+    }
+
+    // Authoritatively verify role via /api/auth/me/ endpoint if access token is available
+    if (accessToken) {
+      try {
+        const meRes = await fetch(`${DJANGO_API_URL}/auth/me/`, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+          cache: "no-store",
+        });
+
+        if (meRes.ok) {
+          const userData = await meRes.json();
+          const verifiedRole = userData.is_superuser ? "ADMIN" : userData.role;
+          if (verifiedRole !== "ADMIN") {
+            const redirectUrl = new URL("/", request.url);
+            redirectUrl.searchParams.set("error", "AccessDenied");
+            return NextResponse.redirect(redirectUrl);
+          }
+        } else if (meRes.status === 401) {
+          // Access token invalid/expired; redirect to login
+          const loginUrl = new URL("/login", request.url);
+          loginUrl.searchParams.set("from", pathname);
+          return NextResponse.redirect(loginUrl);
+        }
+      } catch {
+        // If external call encounters network error, the strict cookie check above already passed
+      }
+    }
   }
 
   return NextResponse.next();

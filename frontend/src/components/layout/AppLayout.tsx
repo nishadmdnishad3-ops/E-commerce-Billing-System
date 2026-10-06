@@ -257,7 +257,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </header>
 
         {/* Content Body */}
-        <main className="flex-1 p-4 md:p-8 bg-slate-50 text-slate-900 overflow-y-auto">
+        <main className="flex-1 p-4 md:p-8 bg-slate-50 text-slate-900 overflow-y-auto print:overflow-visible print:p-0 print:m-0 print:bg-white">
           <div className="max-w-7xl mx-auto">
             {children}
           </div>

@@ -72,6 +72,13 @@ export async function GET(req: NextRequest) {
               maxAge: 7 * 24 * 60 * 60,
             });
           }
+          response.cookies.set("user_role", userData.role || "STAFF", {
+            httpOnly: true,
+            secure: isProduction,
+            sameSite: "lax",
+            path: "/",
+            maxAge: 7 * 24 * 60 * 60,
+          });
           return response;
         }
       }

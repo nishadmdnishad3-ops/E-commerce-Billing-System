@@ -235,10 +235,11 @@ class InvoiceCreateUpdateSerializer(serializers.ModelSerializer):
         items_data = validated_data.pop("items", [])
         invoice = Invoice.objects.create(**validated_data)
 
-        # Create items
+        # Create items first without recalculating totals on each item save
         for idx, item_data in enumerate(items_data, start=1):
             sl = item_data.pop("sl", idx)
-            InvoiceItem.objects.create(invoice=invoice, sl=sl, **item_data)
+            item = InvoiceItem(invoice=invoice, sl=sl, **item_data)
+            item.save(skip_invoice_recalc=True)
 
         invoice.calculate_totals()
         Invoice.objects.filter(pk=invoice.pk).update(
@@ -265,7 +266,8 @@ class InvoiceCreateUpdateSerializer(serializers.ModelSerializer):
             instance.items.all().delete()
             for idx, item_data in enumerate(items_data, start=1):
                 sl = item_data.pop("sl", idx)
-                InvoiceItem.objects.create(invoice=instance, sl=sl, **item_data)
+                item = InvoiceItem(invoice=instance, sl=sl, **item_data)
+                item.save(skip_invoice_recalc=True)
 
         instance.calculate_totals()
         Invoice.objects.filter(pk=instance.pk).update(

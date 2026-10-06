@@ -4,6 +4,7 @@ from django.utils import timezone
 from django.contrib.auth import authenticate, get_user_model
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
+from django.db import transaction
 
 from rest_framework import viewsets, permissions, status
 from rest_framework.views import APIView
@@ -497,12 +498,14 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             return InvoiceCreateUpdateSerializer
         return InvoiceDetailSerializer
 
-    def create(self, request, *args, **kwargs):
-        role = get_user_role(request.user)
-        # Staff can only create DRAFT invoices
+    def perform_create(self, serializer):
+        role = get_user_role(self.request.user)
         if role == UserProfile.ROLE_STAFF:
-            request.data["status"] = "DRAFT"
+            serializer.save(status="DRAFT")
+        else:
+            serializer.save()
 
+    def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
@@ -554,6 +557,16 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         return Response(detail_serializer.data)
 
     def perform_destroy(self, instance):
+        from rest_framework.exceptions import ValidationError
+
+        if instance.payments.exists():
+            raise ValidationError("Cannot delete an invoice that has associated payments.")
+
+        if instance.status != "DRAFT":
+            raise ValidationError(
+                f"Cannot delete an invoice in '{instance.get_status_display()}' status. Only DRAFT invoices can be deleted; non-draft invoices must be cancelled instead."
+            )
+
         record_audit_log(
             AuditLog.ACTION_DELETE,
             request=self.request,
@@ -655,62 +668,84 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             return Response({"error": "Please configure a Company before generating bills."}, status=status.HTTP_400_BAD_REQUEST)
 
         created_invoices = []
+        skipped_clients = []
         clients = Client.objects.filter(is_active=True).prefetch_related("client_services__service")
 
-        for client in clients:
-            subscriptions = client.client_services.filter(is_active=True)
-            if not subscriptions.exists():
-                continue
+        with transaction.atomic():
+            for client in clients:
+                subscriptions = client.client_services.filter(is_active=True)
+                if not subscriptions.exists():
+                    continue
 
-            if Invoice.objects.filter(client=client, billing_month=billing_month).exists():
-                continue
+                if Invoice.objects.filter(client=client, billing_month=billing_month).exists():
+                    skipped_clients.append({
+                        "client_id": client.id,
+                        "client_name": client.name,
+                        "reason": f"Invoice already exists for {billing_month}",
+                    })
+                    continue
 
-            first_sub = subscriptions.first()
-            service_name = first_sub.custom_name or first_sub.service.name
-            title = f"{service_name} Monthly Bill ({billing_month})"
+                first_sub = subscriptions.first()
+                service_name = first_sub.custom_name or first_sub.service.name
+                title = f"{service_name} Monthly Bill ({billing_month})"
 
-            invoice = Invoice.objects.create(
-                title=title,
-                billing_month=billing_month,
-                client=client,
-                company=company,
-                bank_account=bank_account,
-                template=template,
-                status="ISSUED",
-                issue_date=timezone.now().date(),
-            )
-
-            for idx, sub in enumerate(subscriptions, start=1):
-                item_name = f"{idx}. {sub.custom_name or sub.service.name} ({billing_month})"
-                spec = sub.custom_tech_specification or sub.service.default_tech_specification
-                price = sub.custom_price or sub.service.default_price
-
-                InvoiceItem.objects.create(
-                    invoice=invoice,
-                    sl=idx,
-                    service=sub.service,
-                    item_name=item_name,
-                    technical_specification=spec,
-                    quantity=Decimal("1.00"),
-                    unit_price=price,
-                    total=price,
+                invoice = Invoice.objects.create(
+                    title=title,
+                    billing_month=billing_month,
+                    client=client,
+                    company=company,
+                    bank_account=bank_account,
+                    template=template,
+                    status="ISSUED",
+                    issue_date=timezone.now().date(),
                 )
 
-            invoice.calculate_totals()
-            invoice.save()
-            created_invoices.append(invoice.invoice_number)
+                for idx, sub in enumerate(subscriptions, start=1):
+                    raw_name = sub.custom_name or sub.service.name
+                    item_name = f"{raw_name} ({billing_month})" if billing_month else raw_name
+                    spec = sub.custom_tech_specification or sub.service.default_tech_specification
+                    price = sub.custom_price or sub.service.default_price
 
-        record_audit_log(
-            AuditLog.ACTION_CREATE,
-            request=request,
-            model_name="Invoice",
-            object_repr=f"Batch generated {len(created_invoices)} invoices for {billing_month}",
-            changes={"generated_count": len(created_invoices), "month": billing_month},
-        )
+                    item = InvoiceItem(
+                        invoice=invoice,
+                        sl=idx,
+                        service=sub.service,
+                        item_name=item_name,
+                        technical_specification=spec,
+                        quantity=Decimal("1.00"),
+                        unit_price=price,
+                        total=price,
+                    )
+                    item.save(skip_invoice_recalc=True)
+
+                invoice.calculate_totals()
+                Invoice.objects.filter(pk=invoice.pk).update(
+                    sub_total=invoice.sub_total,
+                    vat_amount=invoice.vat_amount,
+                    payable_amount=invoice.payable_amount,
+                    advance_amount=invoice.advance_amount,
+                    paid_amount=invoice.paid_amount,
+                    due_amount=invoice.due_amount,
+                    status=invoice.status,
+                )
+                created_invoices.append(invoice.invoice_number)
+
+            record_audit_log(
+                AuditLog.ACTION_CREATE,
+                request=request,
+                model_name="Invoice",
+                object_repr=f"Batch generated {len(created_invoices)} invoices for {billing_month}",
+                changes={
+                    "generated_count": len(created_invoices),
+                    "skipped_count": len(skipped_clients),
+                    "month": billing_month,
+                },
+            )
 
         return Response({
             "message": f"Successfully generated {len(created_invoices)} bills for {billing_month}",
             "generated_invoices": created_invoices,
+            "skipped_clients": skipped_clients,
         }, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=["get"], permission_classes=[IsStaffOrAbove])
@@ -726,7 +761,7 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             total_invoices=Count("id")
         )
 
-        payment_agg = Payment.objects.aggregate(total_collected=Sum("amount"))
+        payment_agg = Payment.objects.filter(invoice__in=invoices_qs).aggregate(total_collected=Sum("amount"))
         total_collected = payment_agg["total_collected"] or Decimal("0.00")
         inv_paid = billed_agg["total_paid"] or Decimal("0.00")
         final_collected = max(total_collected, inv_paid)

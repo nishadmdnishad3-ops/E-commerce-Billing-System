@@ -413,11 +413,10 @@ export default function UsersPage() {
                           <button
                             type="button"
                             onClick={() => handleToggleActive(u)}
-                            className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-                              u.is_active
-                                ? "text-rose-700 bg-rose-50 hover:bg-rose-100"
-                                : "text-emerald-700 bg-emerald-50 hover:bg-emerald-100"
-                            }`}
+                            className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${u.is_active
+                              ? "text-rose-700 bg-rose-50 hover:bg-rose-100"
+                              : "text-emerald-700 bg-emerald-50 hover:bg-emerald-100"
+                              }`}
                           >
                             {u.is_active ? "Deactivate" : "Activate"}
                           </button>
@@ -515,7 +514,7 @@ export default function UsersPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Role / পদবি *</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Role</label>
                 <select
                   value={formData.role}
                   onChange={(e) => setFormData({ ...formData, role: e.target.value as any })}
@@ -603,7 +602,7 @@ export default function UsersPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Role / পদবি</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Role</label>
                 <select
                   value={formData.role}
                   onChange={(e) => setFormData({ ...formData, role: e.target.value as any })}
