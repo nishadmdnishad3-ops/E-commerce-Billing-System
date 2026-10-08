@@ -229,6 +229,75 @@ export interface Payment {
   created_at: string;
 }
 
+export type CalendarStatus = "PAID" | "PARTIALLY_PAID" | "DUE" | "OVERDUE" | "UPCOMING" | "NO_PAYMENT";
+
+export interface CalendarItem {
+  key: string;
+  has_invoice: boolean;
+  invoice_id: number | null;
+  invoice_number: string | null;
+  invoice_status: string | null;
+  client_id: number;
+  client_name: string;
+  title: string;
+  billing_month: string;
+  currency_symbol: string;
+  due_date: string;
+  expected_amount: string;
+  paid_amount: string;
+  remaining_amount: string;
+  status: CalendarStatus;
+  payment_id: number | null;
+  payment_date: string | null;
+  payment_method: string | null;
+  transaction_id: string | null;
+  payment_count: number;
+}
+
+export interface CalendarDay {
+  date: string;
+  count: number;
+  expected: string;
+  collected: string;
+  due: string;
+  status_counts: Partial<Record<CalendarStatus, number>>;
+  items: CalendarItem[];
+}
+
+export interface CalendarSummary {
+  total_expected: string;
+  total_collected: string;
+  total_due: string;
+  paid_clients: number;
+  due_clients: number;
+  overdue_clients: number;
+  no_payment_clients: number;
+  total_bills: number;
+}
+
+export interface CalendarResponse {
+  year: number;
+  month: number;
+  today: string;
+  summary: CalendarSummary;
+  days: CalendarDay[];
+}
+
+export interface ClientHistoryResponse {
+  client_id: number;
+  client_name: string;
+  history: {
+    year: number;
+    month: number;
+    label: string;
+    expected: string;
+    paid: string;
+    due: string;
+    status: CalendarStatus;
+    bills: CalendarItem[];
+  }[];
+}
+
 export interface PaymentMethod {
   id: number;
   name: string;
@@ -520,6 +589,15 @@ class ApiService {
   // Payments & Money Receipts
   async getPayments(params?: any) {
     return this.get<{ count: number; results: Payment[] }>("/payments/", params);
+  }
+
+  // Monthly payment calendar (computed server-side from invoices & payments)
+  async getPaymentCalendar(params: { month: number; year: number; client?: number | string; status?: string; method?: number | string }) {
+    return this.get<CalendarResponse>("/payments/calendar/", params);
+  }
+
+  async getClientPaymentHistory(clientId: number | string, months = 12) {
+    return this.get<ClientHistoryResponse>(`/payments/client/${clientId}/history/`, { months });
   }
 
   async getPayment(id: number | string) {

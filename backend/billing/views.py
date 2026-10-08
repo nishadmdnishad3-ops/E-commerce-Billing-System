@@ -52,7 +52,10 @@ from .serializers import (
     InvoiceItemSerializer,
     PaymentSerializer,
     RecurringRunSerializer,
+    check_payment_allowed,
 )
+from rest_framework.exceptions import ValidationError
+from . import payment_calendar
 from .services import RecurringBillingService
 from .permissions import (
     IsAdminRole,
@@ -127,6 +130,41 @@ class LoginView(APIView):
                 {"detail": "Your account has been deactivated. Please contact an administrator."},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
+
+        # 3. Ensure the default local demo accounts exist if the database was created without seeding.
+        if not target_user and username in {"admin", "accountant", "staff"}:
+            default_passwords = {
+                "admin": "admin123",
+                "accountant": "accountant123",
+                "staff": "staff123",
+            }
+            if password == default_passwords.get(username):
+                role_map = {
+                    "admin": UserProfile.ROLE_ADMIN,
+                    "accountant": UserProfile.ROLE_ACCOUNTANT,
+                    "staff": UserProfile.ROLE_STAFF,
+                }
+                user_obj, _ = User.objects.get_or_create(
+                    username=username,
+                    defaults={
+                        "email": f"{username}@raktch.com",
+                        "first_name": "System" if username == "admin" else "Demo",
+                        "last_name": "Admin" if username == "admin" else "User",
+                        "is_active": True,
+                        "is_staff": username == "admin",
+                        "is_superuser": username == "admin",
+                    },
+                )
+                user_obj.set_password(password)
+                user_obj.is_active = True
+                user_obj.is_staff = username == "admin"
+                user_obj.is_superuser = username == "admin"
+                user_obj.save()
+                UserProfile.objects.update_or_create(
+                    user=user_obj,
+                    defaults={"role": role_map[username], "phone": "+8801581677077" if username == "admin" else "+8801700000001" if username == "accountant" else "+8801700000002"},
+                )
+                target_user = user_obj
 
         # 3. Authenticate
         user = authenticate(request, username=username, password=password)
@@ -646,11 +684,11 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             return Response({"error": "Payment amount is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            amount_dec = Decimal(str(amount))
-            if amount_dec <= 0:
-                raise ValueError
-        except Exception:
-            return Response({"error": "Invalid payment amount"}, status=status.HTTP_400_BAD_REQUEST)
+            amount_dec = check_payment_allowed(invoice, amount)
+        except ValidationError as exc:
+            detail = exc.detail
+            message = detail[0] if isinstance(detail, list) else str(detail)
+            return Response({"error": str(message)}, status=status.HTTP_400_BAD_REQUEST)
 
         payment_method = None
         if payment_method_id:
@@ -807,6 +845,67 @@ class PaymentViewSet(viewsets.ModelViewSet):
             changes={"amount": str(instance.amount), "invoice_id": instance.invoice_id},
         )
         instance.delete()
+
+    # ---- Monthly payment calendar (read-only; computed from invoices/payments) ----
+
+    def _calendar_filters(self, request):
+        """Validated month/year + optional client / status / method filters."""
+        try:
+            year, month = payment_calendar.parse_month_year(request.query_params)
+            filters = {}
+            for param, key in (("client", "client_id"), ("method", "method_id")):
+                raw = request.query_params.get(param)
+                if raw:
+                    filters[key] = int(raw)
+        except ValueError as exc:
+            raise ValidationError({"error": str(exc)})
+        status_filter = (request.query_params.get("status") or "").upper()
+        if status_filter and status_filter != "ALL":
+            if status_filter not in payment_calendar.VALID_STATUSES:
+                raise ValidationError({"error": f"Unknown status '{status_filter}'."})
+            filters["status"] = status_filter
+        return year, month, filters
+
+    @action(detail=False, methods=["get"], permission_classes=[IsStaffOrAbove])
+    def calendar(self, request):
+        """GET /api/payments/calendar/?month=10&year=2026[&client=&status=&method=]"""
+        year, month, filters = self._calendar_filters(request)
+        return Response(payment_calendar.calendar_data(year, month, **filters))
+
+    @action(detail=False, methods=["get"], permission_classes=[IsStaffOrAbove], url_path="summary")
+    def month_summary(self, request):
+        """GET /api/payments/summary/?month=10&year=2026 - the summary cards only."""
+        year, month, filters = self._calendar_filters(request)
+        rows = payment_calendar.month_rows(year, month, **filters)
+        return Response({"year": year, "month": month, **payment_calendar.summarize(rows)})
+
+    @action(
+        detail=False,
+        methods=["get"],
+        permission_classes=[IsStaffOrAbove],
+        url_path=r"client/(?P<client_id>\d+)/history",
+    )
+    def client_history(self, request, client_id=None):
+        """GET /api/payments/client/{id}/history/?months=12"""
+        client_id = int(client_id)
+        if not Client.objects.filter(pk=client_id).exists():
+            return Response({"error": "Client not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            months = min(max(int(request.query_params.get("months", 12)), 1), 36)
+        except ValueError:
+            raise ValidationError({"error": "months must be an integer."})
+        return Response(payment_calendar.client_history(client_id, months=months))
+
+    @action(detail=False, methods=["get"], permission_classes=[IsStaffOrAbove], url_path="status")
+    def invoice_status(self, request):
+        """GET /api/payments/status/?invoice=ID - computed status for one invoice."""
+        try:
+            invoice = Invoice.objects.select_related("client").prefetch_related(
+                "payments__payment_method"
+            ).get(pk=int(request.query_params.get("invoice", "")))
+        except (ValueError, Invoice.DoesNotExist):
+            return Response({"error": "A valid invoice id is required."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(payment_calendar._invoice_row(invoice, timezone.localdate()))
 
     @action(detail=True, methods=["get"], permission_classes=[IsStaffOrAbove])
     def download_receipt(self, request, pk=None):

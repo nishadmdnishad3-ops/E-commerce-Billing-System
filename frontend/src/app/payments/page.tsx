@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { api, Invoice, Payment, PaymentMethod } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import PaymentCalendarTab from "@/components/payments/PaymentCalendarTab";
 import {
   CreditCard,
   Search,
@@ -24,6 +25,9 @@ import {
 
 export default function PaymentsPage() {
   const { isAccountant, isAdmin } = useAuth();
+
+  // Top-level view: existing transactions screen, or the monthly payment calendar
+  const [view, setView] = useState<"transactions" | "calendar">("transactions");
 
   // Active Tab: "transactions" | "due_invoices" | "paid_invoices"
   const [activeTab, setActiveTab] = useState<"transactions" | "due_invoices" | "paid_invoices">("transactions");
@@ -227,7 +231,7 @@ export default function PaymentsPage() {
           </p>
         </div>
 
-        {isAccountant && (
+        {isAccountant && view === "transactions" && (
           <button
             onClick={() => handleOpenPaymentModal()}
             disabled={dueInvoices.length === 0}
@@ -239,6 +243,40 @@ export default function PaymentsPage() {
         )}
       </div>
 
+      {/* View switch: Transactions | Calendar */}
+      <div role="tablist" aria-label="Payments view" className="inline-flex p-1 rounded-xl bg-slate-100 border border-slate-200">
+        <button
+          role="tab"
+          aria-selected={view === "transactions"}
+          onClick={() => setView("transactions")}
+          className={`px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 cursor-pointer transition-all ${
+            view === "transactions" ? "bg-white text-cyan-700 shadow-xs" : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          <CreditCard size={15} />
+          Transactions
+        </button>
+        <button
+          role="tab"
+          aria-selected={view === "calendar"}
+          onClick={() => setView("calendar")}
+          className={`px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 cursor-pointer transition-all ${
+            view === "calendar" ? "bg-white text-cyan-700 shadow-xs" : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          <Calendar size={15} />
+          Calendar
+        </button>
+      </div>
+
+      {view === "calendar" ? (
+        <PaymentCalendarTab
+          paymentMethods={paymentMethods}
+          isAccountant={isAccountant}
+          onPaymentSaved={loadData}
+        />
+      ) : (
+      <>
       {/* KPI Cards Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Total Collected */}
@@ -659,6 +697,9 @@ export default function PaymentsPage() {
             </div>
           )}
         </div>
+      )}
+
+      </>
       )}
 
       {/* Record Payment Modal */}

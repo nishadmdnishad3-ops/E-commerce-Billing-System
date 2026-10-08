@@ -124,6 +124,30 @@ class InvoiceItemSerializer(serializers.ModelSerializer):
         read_only_fields = ["total"]
 
 
+def check_payment_allowed(invoice, amount, replacing=None):
+    """
+    Shared payment validation (used by POST /payments/ and record_payment).
+    `replacing` is an existing Payment being edited, whose amount is freed up.
+    Returns the amount as a Decimal or raises serializers.ValidationError.
+    """
+    try:
+        amount = Decimal(str(amount))
+    except Exception:
+        raise serializers.ValidationError("Invalid payment amount.")
+    if amount <= 0:
+        raise serializers.ValidationError("Payment amount must be greater than zero.")
+    if invoice.status == "CANCELLED":
+        raise serializers.ValidationError("Cannot record a payment on a cancelled invoice.")
+    available = invoice.due_amount
+    if replacing is not None and replacing.invoice_id == invoice.pk:
+        available += replacing.amount
+    if amount > available:
+        raise serializers.ValidationError(
+            f"Payment of {amount} exceeds the remaining due of {available} for invoice {invoice.invoice_number}."
+        )
+    return amount
+
+
 class PaymentSerializer(serializers.ModelSerializer):
     payment_method_name = serializers.ReadOnlyField(source="payment_method.name")
     receipt_number = serializers.ReadOnlyField()
@@ -158,6 +182,16 @@ class PaymentSerializer(serializers.ModelSerializer):
             "note",
             "created_at",
         ]
+
+    def validate(self, attrs):
+        invoice = attrs.get("invoice") or (self.instance.invoice if self.instance else None)
+        amount = attrs.get("amount", self.instance.amount if self.instance else None)
+        if invoice is not None and amount is not None:
+            try:
+                attrs["amount"] = check_payment_allowed(invoice, amount, replacing=self.instance)
+            except serializers.ValidationError as exc:
+                raise serializers.ValidationError({"amount": exc.detail})
+        return attrs
 
 
 class InvoiceListSerializer(serializers.ModelSerializer):
