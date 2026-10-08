@@ -28,7 +28,7 @@ export async function middleware(request: NextRequest) {
   }
 
   // Admin-only page protection
-  const adminOnlyRoutes = ["/users", "/audit-logs", "/settings"];
+  const adminOnlyRoutes = ["/users", "/audit-logs", "/settings", "/recurring-runs"];
   const isAdminRoute = adminOnlyRoutes.some(
     (route) => pathname === route || pathname.startsWith(`${route}/`)
   );

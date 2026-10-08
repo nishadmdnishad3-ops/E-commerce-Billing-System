@@ -1004,5 +1004,333 @@ class Phase7ArchitectureAndSecurityFixesTest(APITestCase):
         self.assertEqual(seq_num_after, initial_num)
 
 
+from django.db import IntegrityError
+import unittest
+from .models import Subscription, RecurringRun, Settings
+from .services import RecurringBillingService, get_effective_billing_date, is_subscription_due
+
+
+class Phase8RecurringBillingAutomatedTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser(username="admin8", password="password8", email="admin8@test.com")
+        UserProfile.objects.create(user=self.admin, role=UserProfile.ROLE_ADMIN)
+
+        self.company = Company.objects.create(
+            name="RAKTCH TECHNOLOGY & SOFTWARE",
+            address="Uttara, Dhaka",
+            email="support@raktch.com",
+            phone="+8801581677077",
+            is_default=True,
+        )
+        self.client_a = Client.objects.create(name="Delta Global", contact_person="Karim Ullah", is_active=True)
+        self.client_b = Client.objects.create(name="Epsilon Trade", contact_person="Fatima Begum", is_active=True)
+
+        self.service_monthly = Service.objects.create(
+            name="ERP Hosting",
+            default_tech_specification="Monthly Cloud",
+            default_price=Decimal("2000.00"),
+            billing_cycle="MONTHLY",
+        )
+        self.service_quarterly = Service.objects.create(
+            name="Security Audit",
+            default_tech_specification="Quarterly Review",
+            default_price=Decimal("6000.00"),
+            billing_cycle="QUARTERLY",
+        )
+        self.service_yearly = Service.objects.create(
+            name="Domain & SSL Renewal",
+            default_tech_specification="Yearly Maintenance",
+            default_price=Decimal("5000.00"),
+            billing_cycle="YEARLY",
+        )
+
+        self.template = InvoiceTemplate.objects.create(name="Standard Recurring Template", is_default=True)
+        self.settings = Settings.objects.create(
+            currency_symbol="Tk",
+            currency_code="BDT",
+            default_company=self.company,
+            auto_billing_enabled=True,
+            auto_billing_day=1,
+            auto_billing_timezone="Asia/Dhaka",
+        )
+
+    def test_running_job_twice_creates_no_duplicates(self):
+        """Idempotency: running recurring billing job twice generates invoices once without duplicates"""
+        sub = Subscription.objects.create(
+            client=self.client_a,
+            service=self.service_monthly,
+            start_date=datetime.date(2026, 1, 1),
+            billing_cycle="MONTHLY",
+            is_active=True,
+        )
+
+        # 1. First run generates the invoice
+        res1 = RecurringBillingService.run_recurring_billing(
+            target_period="2026-05",
+            trigger="MANUAL",
+            force=True,
+            catch_up=False,
+        )
+        self.assertEqual(res1["status"], RecurringRun.STATUS_SUCCESS)
+        self.assertEqual(res1["created_count"], 1)
+        self.assertEqual(res1["skipped_count"], 0)
+        self.assertEqual(res1["failed_count"], 0)
+
+        invoice_count = Invoice.objects.filter(subscription=sub, billing_period="2026-05").count()
+        self.assertEqual(invoice_count, 1)
+
+        # 2. Second run for same period skips duplicate
+        res2 = RecurringBillingService.run_recurring_billing(
+            target_period="2026-05",
+            trigger="MANUAL",
+            force=True,
+            catch_up=False,
+        )
+        self.assertEqual(res2["status"], RecurringRun.STATUS_SUCCESS)
+        self.assertEqual(res2["created_count"], 0)
+        self.assertEqual(res2["skipped_count"], 1)
+        self.assertIn("already exists", res2["skipped_items"][0]["reason"])
+
+        # Still exactly 1 invoice in DB
+        self.assertEqual(Invoice.objects.filter(subscription=sub, billing_period="2026-05").count(), 1)
+
+    def test_concurrent_duplicate_protection_db_unique_constraint(self):
+        """Database enforces UniqueConstraint on (subscription, billing_period)"""
+        sub = Subscription.objects.create(
+            client=self.client_a,
+            service=self.service_monthly,
+            start_date=datetime.date(2026, 1, 1),
+            billing_cycle="MONTHLY",
+        )
+
+        # First invoice directly in DB
+        Invoice.objects.create(
+            title="First Invoice",
+            client=self.client_a,
+            company=self.company,
+            template=self.template,
+            subscription=sub,
+            billing_period="2026-07",
+            billing_month="July-2026",
+            status="ISSUED",
+        )
+
+        # Attempt second invoice for same subscription & billing_period raises IntegrityError
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Invoice.objects.create(
+                    title="Duplicate Attempt",
+                    client=self.client_a,
+                    company=self.company,
+                    template=self.template,
+                    subscription=sub,
+                    billing_period="2026-07",
+                    billing_month="July-2026",
+                    status="ISSUED",
+                )
+
+        # Safe service method catches IntegrityError and flags SKIPPED
+        _, err, code = RecurringBillingService.generate_single_invoice(
+            subscription=sub,
+            year=2026,
+            month=7,
+            trigger="AUTO",
+        )
+        self.assertEqual(code, "SKIPPED")
+
+    def test_month_end_date_handling(self):
+        """Month-end days (Jan 31, Feb 28/29, Apr 30) adjust correctly to month's last day"""
+        # Day 31 in January -> Jan 31
+        d_jan = get_effective_billing_date(2026, 1, 31)
+        self.assertEqual(d_jan, datetime.date(2026, 1, 31))
+
+        # Day 31 in non-leap February (2026) -> Feb 28
+        d_feb_common = get_effective_billing_date(2026, 2, 31)
+        self.assertEqual(d_feb_common, datetime.date(2026, 2, 28))
+
+        # Day 31 in leap February (2028) -> Feb 29
+        d_feb_leap = get_effective_billing_date(2028, 2, 31)
+        self.assertEqual(d_feb_leap, datetime.date(2028, 2, 29))
+
+        # Day 31 in April (30 days) -> Apr 30
+        d_apr = get_effective_billing_date(2026, 4, 31)
+        self.assertEqual(d_apr, datetime.date(2026, 4, 30))
+
+    def test_quarterly_and_yearly_billing_cycles(self):
+        """Respects quarterly (every 3 months) and yearly cycles from subscription start date"""
+        # Quarterly starting March 2026
+        sub_q = Subscription.objects.create(
+            client=self.client_a,
+            service=self.service_quarterly,
+            start_date=datetime.date(2026, 3, 1),
+            billing_cycle="QUARTERLY",
+        )
+
+        due_mar, _ = is_subscription_due(sub_q, 2026, 3, 1)
+        due_apr, _ = is_subscription_due(sub_q, 2026, 4, 1)
+        due_may, _ = is_subscription_due(sub_q, 2026, 5, 1)
+        due_jun, _ = is_subscription_due(sub_q, 2026, 6, 1)
+
+        self.assertTrue(due_mar, "March is start month (due)")
+        self.assertFalse(due_apr, "April is 1 month in (not due)")
+        self.assertFalse(due_may, "May is 2 months in (not due)")
+        self.assertTrue(due_jun, "June is 3 months in (due)")
+
+        # Yearly starting August 2025
+        sub_y = Subscription.objects.create(
+            client=self.client_b,
+            service=self.service_yearly,
+            start_date=datetime.date(2025, 8, 1),
+            billing_cycle="YEARLY",
+        )
+
+        due_aug_2026, _ = is_subscription_due(sub_y, 2026, 8, 1)
+        due_sep_2026, _ = is_subscription_due(sub_y, 2026, 9, 1)
+        due_aug_2027, _ = is_subscription_due(sub_y, 2027, 8, 1)
+
+        self.assertTrue(due_aug_2026, "Anniversary month (due)")
+        self.assertFalse(due_sep_2026, "Next month (not due)")
+        self.assertTrue(due_aug_2027, "Year 2 anniversary (due)")
+
+    def test_inactive_and_expired_subscriptions_are_skipped(self):
+        """Inactive subscriptions, inactive clients, and expired subscriptions are skipped"""
+        # Inactive sub
+        sub_inactive = Subscription.objects.create(
+            client=self.client_a,
+            service=self.service_monthly,
+            start_date=datetime.date(2026, 1, 1),
+            is_active=False,
+        )
+        due1, r1 = is_subscription_due(sub_inactive, 2026, 5, 1)
+        self.assertFalse(due1)
+        self.assertIn("inactive", r1.lower())
+
+        # Inactive client
+        client_inactive = Client.objects.create(name="Inactive Co", is_active=False)
+        sub_inactive_client = Subscription.objects.create(
+            client=client_inactive,
+            service=self.service_monthly,
+            start_date=datetime.date(2026, 1, 1),
+            is_active=True,
+        )
+        due2, r2 = is_subscription_due(sub_inactive_client, 2026, 5, 1)
+        self.assertFalse(due2)
+        self.assertIn("client is inactive", r2.lower())
+
+        # Expired sub (ended on 2026-03-31)
+        sub_expired = Subscription.objects.create(
+            client=self.client_a,
+            service=self.service_yearly,
+            start_date=datetime.date(2026, 1, 1),
+            end_date=datetime.date(2026, 3, 31),
+            is_active=True,
+        )
+        due3, r3 = is_subscription_due(sub_expired, 2026, 5, 1)
+        self.assertFalse(due3)
+        self.assertIn("expired", r3.lower())
+
+    def test_failure_isolation_one_failing_subscription_does_not_block_others(self):
+        """One subscription error does not rollback other valid subscriptions"""
+        sub_valid = Subscription.objects.create(
+            client=self.client_a,
+            service=self.service_monthly,
+            start_date=datetime.date(2026, 1, 1),
+            is_active=True,
+        )
+        sub_faulty = Subscription.objects.create(
+            client=self.client_b,
+            service=self.service_monthly,
+            start_date=datetime.date(2026, 1, 1),
+            is_active=True,
+        )
+
+        original_save = InvoiceItem.save
+
+        # Force failure on sub_faulty's item save
+        def faulty_save(item_self, *args, **kwargs):
+            if item_self.invoice.subscription_id == sub_faulty.id:
+                raise ValueError("Simulated unexpected failure on subscription B")
+            return original_save(item_self, *args, **kwargs)
+
+        with unittest.mock.patch.object(InvoiceItem, "save", side_effect=faulty_save, autospec=True):
+            res = RecurringBillingService.run_recurring_billing(
+                target_period="2026-08",
+                trigger="MANUAL",
+                force=True,
+                catch_up=False,
+            )
+
+        # sub_valid created its invoice, sub_faulty failed
+        self.assertEqual(res["status"], RecurringRun.STATUS_PARTIAL)
+        self.assertEqual(res["created_count"], 1)
+        self.assertEqual(res["failed_count"], 1)
+        self.assertEqual(Invoice.objects.filter(subscription=sub_valid, billing_period="2026-08").count(), 1)
+        self.assertEqual(Invoice.objects.filter(subscription=sub_faulty, billing_period="2026-08").count(), 0)
+
+    def test_catch_up_after_missed_run(self):
+        """Catches up missed billing periods (last 3 periods) when server was down"""
+        sub = Subscription.objects.create(
+            client=self.client_a,
+            service=self.service_monthly,
+            start_date=datetime.date(2026, 2, 1),
+            is_active=True,
+        )
+
+        # Current period is 2026-04. Sub started 2026-02.
+        # No runs occurred for 2026-02, 2026-03, 2026-04.
+        res = RecurringBillingService.run_recurring_billing(
+            target_period="2026-04",
+            trigger="MANUAL",
+            force=True,
+            catch_up=True,
+        )
+
+        # Should generate for 2026-02, 2026-03, 2026-04 (3 missed periods)
+        self.assertEqual(res["created_count"], 3)
+        self.assertEqual(Invoice.objects.filter(subscription=sub).count(), 3)
+        self.assertTrue(Invoice.objects.filter(subscription=sub, billing_period="2026-02").exists())
+        self.assertTrue(Invoice.objects.filter(subscription=sub, billing_period="2026-03").exists())
+        self.assertTrue(Invoice.objects.filter(subscription=sub, billing_period="2026-04").exists())
+
+        # Second run catches up nothing new
+        res2 = RecurringBillingService.run_recurring_billing(
+            target_period="2026-04",
+            trigger="MANUAL",
+            force=True,
+            catch_up=True,
+        )
+        self.assertEqual(res2["created_count"], 0)
+
+    def test_preview_and_api_endpoints(self):
+        """Test preview, trigger, and status REST endpoints"""
+        self.client.force_authenticate(user=self.admin)
+        Subscription.objects.create(
+            client=self.client_a,
+            service=self.service_monthly,
+            start_date=datetime.date(2026, 9, 1),
+            is_active=True,
+        )
+
+        # 1. Preview endpoint returns simulation without creating DB invoices
+        preview_resp = self.client.get("/api/recurring-runs/preview/?period=2026-09")
+        self.assertEqual(preview_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(preview_resp.data["total_would_create"], 1)
+        self.assertEqual(Invoice.objects.filter(billing_period="2026-09").count(), 0)
+
+        # 2. Trigger endpoint executes run
+        trigger_resp = self.client.post("/api/recurring-runs/trigger/", {"period": "2026-09"})
+        self.assertEqual(trigger_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(trigger_resp.data["created_count"], 1)
+        self.assertEqual(Invoice.objects.filter(billing_period="2026-09").count(), 1)
+
+        # 3. Status endpoint returns summary and warning flags
+        status_resp = self.client.get("/api/recurring-runs/status/")
+        self.assertEqual(status_resp.status_code, status.HTTP_200_OK)
+        self.assertIn("has_warning", status_resp.data)
+        self.assertIn("auto_billing_enabled", status_resp.data)
+        self.assertEqual(status_resp.data["auto_billing_enabled"], True)
+
+
+
 
 

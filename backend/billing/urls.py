@@ -16,10 +16,12 @@ from .views import (
     ClientViewSet,
     ServiceViewSet,
     ClientServicePriceViewSet,
+    SubscriptionViewSet,
     InvoiceTemplateViewSet,
     InvoiceViewSet,
     InvoiceItemViewSet,
     PaymentViewSet,
+    RecurringRunViewSet,
 )
 
 router = DefaultRouter()
@@ -32,6 +34,8 @@ router.register(r"payment-methods", PaymentMethodViewSet, basename="payment-meth
 router.register(r"clients", ClientViewSet, basename="client")
 router.register(r"services", ServiceViewSet, basename="service")
 router.register(r"client-services", ClientServicePriceViewSet, basename="client-service")
+router.register(r"subscriptions", SubscriptionViewSet, basename="subscription")
+router.register(r"recurring-runs", RecurringRunViewSet, basename="recurring-run")
 router.register(r"templates", InvoiceTemplateViewSet, basename="template")
 router.register(r"invoices", InvoiceViewSet, basename="invoice")
 router.register(r"invoice-items", InvoiceItemViewSet, basename="invoice-item")

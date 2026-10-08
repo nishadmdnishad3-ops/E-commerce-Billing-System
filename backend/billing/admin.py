@@ -8,10 +8,12 @@ from .models import (
     Client,
     Service,
     ClientServicePrice,
+    Subscription,
     InvoiceTemplate,
     Invoice,
     InvoiceItem,
     Payment,
+    RecurringRun,
 )
 
 
@@ -216,3 +218,19 @@ class PaymentAdmin(admin.ModelAdmin):
     list_display = ["invoice", "amount", "payment_date", "payment_method", "transaction_id"]
     list_filter = ["payment_date", "payment_method"]
     search_fields = ["invoice__invoice_number", "transaction_id"]
+
+
+@admin.register(Subscription)
+class SubscriptionAdmin(admin.ModelAdmin):
+    list_display = ["client", "service", "effective_name", "effective_price", "billing_cycle", "auto_status", "is_active", "start_date"]
+    list_filter = ["billing_cycle", "auto_status", "is_active"]
+    search_fields = ["client__name", "service__name", "custom_name"]
+
+
+@admin.register(RecurringRun)
+class RecurringRunAdmin(admin.ModelAdmin):
+    list_display = ["run_time", "trigger", "target_period", "status", "created_count", "skipped_count", "failed_count"]
+    list_filter = ["status", "trigger"]
+    search_fields = ["target_period", "error_message"]
+    readonly_fields = ["run_time", "created_at"]
+

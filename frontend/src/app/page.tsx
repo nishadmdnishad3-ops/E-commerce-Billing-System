@@ -1,11 +1,12 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { api, Invoice, Client } from "@/lib/api";
+import { api, Invoice, Client, RecurringDashboardStatus } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import {
   FileText,
   AlertCircle,
+  AlertTriangle,
   Users,
   PlusCircle,
   Calendar,
@@ -13,10 +14,11 @@ import {
   CheckCircle2,
   Printer,
   ChevronRight,
+  Eye,
 } from "lucide-react";
 
 export default function DashboardPage() {
-  const { user, isAccountant } = useAuth();
+  const { user, isAccountant, isAdmin } = useAuth();
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [summary, setSummary] = useState({
@@ -31,19 +33,24 @@ export default function DashboardPage() {
   const [batchModalOpen, setBatchModalOpen] = useState(false);
   const [batchSubmitting, setBatchSubmitting] = useState(false);
   const [batchMessage, setBatchMessage] = useState("");
+  const [recurringStatus, setRecurringStatus] = useState<RecurringDashboardStatus | null>(null);
 
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [invRes, clientRes, summaryRes] = await Promise.all([
+      const [invRes, clientRes, summaryRes, recStatusRes] = await Promise.all([
         api.getInvoices({ page_size: 10 }),
         api.getClients(),
         api.getDashboardSummary().catch(() => null),
+        api.getRecurringStatus().catch(() => null),
       ]);
       setInvoices(invRes.results || []);
       setClients(clientRes.results || []);
       if (summaryRes) {
         setSummary(summaryRes);
+      }
+      if (recStatusRes) {
+        setRecurringStatus(recStatusRes);
       }
     } catch (err) {
       console.error("Dashboard fetch error:", err);
@@ -88,6 +95,27 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-8">
+      {/* Recurring Run Warning Banner */}
+      {recurringStatus?.has_warning && (
+        <div className="p-4 md:p-5 rounded-3xl bg-amber-50 border border-amber-200/80 text-amber-900 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={22} className="text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <h4 className="font-bold text-sm">Automated Billing Alert</h4>
+              <p className="text-xs text-amber-800 mt-0.5">{recurringStatus.warning_message}</p>
+            </div>
+          </div>
+          {isAdmin && (
+            <a
+              href="/recurring-runs"
+              className="px-4 py-2 rounded-xl text-xs font-bold bg-amber-200/70 hover:bg-amber-200 text-amber-950 transition-colors shrink-0 shadow-2xs"
+            >
+              Inspect & Run
+            </a>
+          )}
+        </div>
+      )}
+
       {/* Top Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-gradient-to-r from-white via-cyan-50/30 to-blue-50/50 p-6 md:p-8 rounded-3xl border border-cyan-200/60 shadow-[0_4px_24px_-6px_rgba(6,182,212,0.10)]">
         <div>

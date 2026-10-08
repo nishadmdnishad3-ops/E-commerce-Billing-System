@@ -9,7 +9,7 @@ import {
   InvoiceTemplate,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { Building2, Landmark, Settings as SettingsIcon, FileSpreadsheet, Save, Check } from "lucide-react";
+import { Building2, Landmark, Settings as SettingsIcon, FileSpreadsheet, Save, Check, RefreshCw } from "lucide-react";
 
 export default function SettingsPage() {
   const { isAdmin } = useAuth();
@@ -18,7 +18,7 @@ export default function SettingsPage() {
   const [successMsg, setSuccessMsg] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
 
-  const [activeTab, setActiveTab] = useState<"company" | "bank" | "template" | "global">("company");
+  const [activeTab, setActiveTab] = useState<"company" | "bank" | "template" | "global" | "automation">("company");
 
   // State
   const [company, setCompany] = useState<Company | null>(null);
@@ -69,7 +69,7 @@ export default function SettingsPage() {
         await api.updateBankAccount(bankAccount.id, bankAccount);
       } else if (activeTab === "template" && template) {
         await api.updateTemplate(template.id, template);
-      } else if (activeTab === "global" && settings) {
+      } else if ((activeTab === "global" || activeTab === "automation") && settings) {
         await api.updateSettings(settings.id, settings);
       }
 
@@ -163,6 +163,19 @@ export default function SettingsPage() {
         >
           <SettingsIcon size={16} className={activeTab === "global" ? "text-cyan-600" : "text-slate-400"} />
           Global Defaults
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab("automation")}
+          className={`py-2.5 px-4 font-bold text-xs uppercase tracking-wider flex items-center gap-2 rounded-xl transition-all cursor-pointer ${
+            activeTab === "automation"
+              ? "bg-white text-cyan-800 shadow-[0_2px_10px_rgba(0,0,0,0.06)] border border-slate-200/70"
+              : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
+          }`}
+        >
+          <RefreshCw size={16} className={activeTab === "automation" ? "text-cyan-600" : "text-slate-400"} />
+          Automated Billing
         </button>
       </div>
 
@@ -457,6 +470,99 @@ export default function SettingsPage() {
                 onChange={(e) => setSettings({ ...settings, invoice_footer_note: e.target.value })}
                 className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 shadow-2xs"
               />
+            </div>
+          </div>
+        )}
+
+        {/* Automation Tab */}
+        {activeTab === "automation" && settings && (
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-base font-bold text-slate-900">Automated Recurring Billing</h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Configure when and how monthly subscription invoices are created automatically.
+              </p>
+            </div>
+
+            {/* Global Switch */}
+            <div className="flex items-center justify-between p-4 bg-slate-50 border border-slate-200 rounded-2xl">
+              <div>
+                <span className="text-sm font-bold text-slate-800 block">Enable Automatic Billing</span>
+                <span className="text-xs text-slate-500">
+                  When active, invoices for all active recurring subscriptions will generate automatically on schedule.
+                </span>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(settings.auto_billing_enabled)}
+                  onChange={(e) => setSettings({ ...settings, auto_billing_enabled: e.target.checked })}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-600"></div>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                  Billing Day of Month (1 - 31)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={31}
+                  value={settings.auto_billing_day ?? 1}
+                  onChange={(e) => setSettings({ ...settings, auto_billing_day: parseInt(e.target.value) || 1 })}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 shadow-2xs font-bold"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Months with fewer days (e.g. Feb 28/29 or Apr 30) automatically adjust to the month's final day.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                  Trigger Time (HH:MM)
+                </label>
+                <input
+                  type="time"
+                  value={settings.auto_billing_time || "00:00"}
+                  onChange={(e) => setSettings({ ...settings, auto_billing_time: e.target.value })}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 shadow-2xs"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Time of day when the scheduler activates.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                  Timezone
+                </label>
+                <input
+                  type="text"
+                  value={settings.auto_billing_timezone || "Asia/Dhaka"}
+                  onChange={(e) => setSettings({ ...settings, auto_billing_timezone: e.target.value })}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 shadow-2xs font-medium"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Default: Asia/Dhaka
+                </p>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-cyan-50 border border-cyan-200/70 text-cyan-900 text-xs space-y-1">
+              <span className="font-bold flex items-center gap-1.5">
+                <RefreshCw size={14} className="text-cyan-700" />
+                Scheduler & Run Audit:
+              </span>
+              <p>
+                To monitor run status, preview next bills, or trigger runs on demand, visit the{" "}
+                <a href="/recurring-runs" className="underline font-bold text-cyan-800 hover:text-cyan-900">
+                  Recurring Runs Audit Page
+                </a>.
+              </p>
             </div>
           </div>
         )}

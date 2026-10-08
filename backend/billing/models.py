@@ -97,6 +97,12 @@ class Settings(models.Model):
     default_nb_text = models.TextField(default="[N.B Please send the bill to]")
     invoice_footer_note = models.CharField(max_length=255, blank=True, default="www.raktch.com")
 
+    # Automated Recurring Billing Settings
+    auto_billing_enabled = models.BooleanField(default=False, help_text="Enable automatic recurring bill generation")
+    auto_billing_day = models.PositiveSmallIntegerField(default=1, help_text="Day of month to run auto-generation (1-31)")
+    auto_billing_time = models.TimeField(default=datetime.time(0, 0), help_text="Time of day to run auto-generation")
+    auto_billing_timezone = models.CharField(max_length=50, default="Asia/Dhaka", help_text="Timezone for scheduler")
+
     class Meta:
         verbose_name_plural = "Settings"
 
@@ -167,6 +173,89 @@ class ClientServicePrice(models.Model):
 
     def __str__(self):
         return f"{self.client.name} - {self.service.name}: {self.custom_price} Tk"
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # Keep corresponding Subscription synchronized for backward compatibility
+        try:
+            cycle = self.service.billing_cycle if self.service and self.service.billing_cycle in ["MONTHLY", "QUARTERLY", "YEARLY"] else "MONTHLY"
+            Subscription.objects.update_or_create(
+                client=self.client,
+                service=self.service,
+                defaults={
+                    "custom_name": self.custom_name,
+                    "custom_tech_specification": self.custom_tech_specification,
+                    "custom_price": self.custom_price,
+                    "billing_cycle": cycle,
+                    "is_active": self.is_active,
+                }
+            )
+        except Exception:
+            pass
+
+
+class Subscription(models.Model):
+    CYCLE_MONTHLY = "MONTHLY"
+    CYCLE_QUARTERLY = "QUARTERLY"
+    CYCLE_YEARLY = "YEARLY"
+    CYCLE_CHOICES = [
+        (CYCLE_MONTHLY, "Monthly"),
+        (CYCLE_QUARTERLY, "Quarterly"),
+        (CYCLE_YEARLY, "Yearly"),
+    ]
+
+    STATUS_DRAFT = "DRAFT"
+    STATUS_ISSUED = "ISSUED"
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, "Draft"),
+        (STATUS_ISSUED, "Issued"),
+    ]
+
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="subscriptions")
+    service = models.ForeignKey(Service, on_delete=models.PROTECT, related_name="subscriptions")
+    custom_name = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Custom name for bill item, e.g. 'Supershop Software'"
+    )
+    custom_tech_specification = models.TextField(
+        blank=True,
+        help_text="Custom specification for bill item"
+    )
+    custom_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    billing_cycle = models.CharField(max_length=20, choices=CYCLE_CHOICES, default=CYCLE_MONTHLY)
+    start_date = models.DateField(default=timezone.localdate)
+    end_date = models.DateField(null=True, blank=True)
+    auto_status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_ISSUED,
+        help_text="Default status for auto-generated invoices (DRAFT needs review, ISSUED is final)"
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        unique_together = ("client", "service")
+
+    def __str__(self):
+        return f"{self.client.name} - {self.effective_name} ({self.effective_price} Tk/{self.billing_cycle})"
+
+    @property
+    def effective_price(self):
+        if self.custom_price is not None:
+            return self.custom_price
+        return self.service.default_price if self.service else Decimal("0.00")
+
+    @property
+    def effective_name(self):
+        return self.custom_name or (self.service.name if self.service else "Service")
+
+    @property
+    def effective_tech_specification(self):
+        return self.custom_tech_specification or (self.service.default_tech_specification if self.service else "")
 
 
 class InvoiceTemplate(models.Model):
@@ -261,8 +350,30 @@ class Invoice(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Linked Subscription and Period Tracking for Auto-billing
+    subscription = models.ForeignKey(
+        "Subscription",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="invoices"
+    )
+    billing_period = models.CharField(
+        max_length=50,
+        blank=True,
+        db_index=True,
+        help_text="Standardized period key e.g. '2026-05' or 'May-2026'"
+    )
+
     class Meta:
         ordering = ["-issue_date", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["subscription", "billing_period"],
+                name="unique_invoice_per_subscription_period",
+                condition=models.Q(subscription__isnull=False),
+            )
+        ]
 
     def __str__(self):
         return f"{self.invoice_number or 'Draft'} - {self.client_name or self.client.name} ({self.payable_amount} {self.currency_symbol})"
@@ -619,4 +730,39 @@ class LoginAttempt(models.Model):
         if self.locked_until and self.locked_until > timezone.now():
             return True
         return False
+
+
+class RecurringRun(models.Model):
+    TRIGGER_AUTO = "AUTO"
+    TRIGGER_MANUAL = "MANUAL"
+    TRIGGER_CHOICES = [
+        (TRIGGER_AUTO, "Automatic"),
+        (TRIGGER_MANUAL, "Manual"),
+    ]
+
+    STATUS_SUCCESS = "SUCCESS"
+    STATUS_PARTIAL = "PARTIAL"
+    STATUS_FAILED = "FAILED"
+    STATUS_CHOICES = [
+        (STATUS_SUCCESS, "Success"),
+        (STATUS_PARTIAL, "Partial"),
+        (STATUS_FAILED, "Failed"),
+    ]
+
+    run_time = models.DateTimeField(default=timezone.now)
+    trigger = models.CharField(max_length=20, choices=TRIGGER_CHOICES, default=TRIGGER_AUTO)
+    target_period = models.CharField(max_length=50, blank=True, help_text="e.g. 2026-05 or May-2026")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SUCCESS)
+    created_count = models.PositiveIntegerField(default=0)
+    skipped_count = models.PositiveIntegerField(default=0)
+    failed_count = models.PositiveIntegerField(default=0)
+    details = models.JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-run_time"]
+
+    def __str__(self):
+        return f"[{self.run_time.strftime('%Y-%m-%d %H:%M')}] {self.trigger} ({self.status}) - Created: {self.created_count}, Skipped: {self.skipped_count}, Failed: {self.failed_count}"
 

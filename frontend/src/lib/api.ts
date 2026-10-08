@@ -69,6 +69,88 @@ export interface GlobalSettings {
   default_bank_account: number | null;
   default_nb_text: string;
   invoice_footer_note: string;
+  auto_billing_enabled?: boolean;
+  auto_billing_day?: number;
+  auto_billing_time?: string;
+  auto_billing_timezone?: string;
+}
+
+export interface Subscription {
+  id: number;
+  client: number;
+  client_name?: string;
+  service: number;
+  service_name?: string;
+  custom_name: string;
+  custom_tech_specification: string;
+  custom_price: string | null;
+  effective_price?: string;
+  effective_name?: string;
+  effective_tech_specification?: string;
+  billing_cycle: "MONTHLY" | "QUARTERLY" | "YEARLY";
+  start_date: string;
+  end_date: string | null;
+  auto_status: "DRAFT" | "ISSUED";
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecurringRun {
+  id: number;
+  run_time: string;
+  trigger: "AUTO" | "MANUAL";
+  trigger_display?: string;
+  target_period: string;
+  status: "SUCCESS" | "PARTIAL" | "FAILED";
+  created_count: number;
+  skipped_count: number;
+  failed_count: number;
+  details: {
+    created?: Array<{ invoice_number: string; client_name: string; service_name: string; period: string; amount: number; status: string } | string>;
+    skipped?: Array<{ subscription_id: number; client_id: number; client_name: string; service_name: string; period: string; reason: string }>;
+    failed?: Array<{ subscription_id: number; client_id: number; client_name: string; service_name: string; period: string; error: string }>;
+  };
+  error_message: string;
+  created_at: string;
+}
+
+export interface RecurringPreviewResponse {
+  target_period: string;
+  display_month: string;
+  would_create: Array<{
+    subscription_id: number;
+    client_id: number;
+    client_name: string;
+    service_name: string;
+    billing_period: string;
+    billing_month: string;
+    amount: number;
+    status: string;
+    billing_cycle: string;
+    issue_date: string;
+  }>;
+  would_skip: Array<{
+    subscription_id: number;
+    client_id: number;
+    client_name: string;
+    service_name: string;
+    period: string;
+    reason: string;
+  }>;
+  total_would_create: number;
+  total_would_skip: number;
+}
+
+export interface RecurringDashboardStatus {
+  has_warning: boolean;
+  warning_type: string;
+  warning_message: string;
+  auto_billing_enabled: boolean;
+  auto_billing_day: number;
+  auto_billing_time: string;
+  auto_billing_timezone: string;
+  last_run: RecurringRun | null;
 }
 
 export interface ClientServicePrice {
@@ -91,6 +173,7 @@ export interface Client {
   address: string;
   is_active: boolean;
   client_services?: ClientServicePrice[];
+  subscriptions?: Subscription[];
 }
 
 export interface Service {
@@ -565,6 +648,51 @@ class ApiService {
 
   async getPaymentMethods() {
     return this.get<{ count: number; results: PaymentMethod[] }>("/payment-methods/");
+  }
+
+  // Subscriptions
+  async getSubscriptions(params?: Record<string, string>) {
+    const q = params ? "?" + new URLSearchParams(params).toString() : "";
+    return this.get<{ count: number; results: Subscription[] }>(`/subscriptions/${q}`);
+  }
+
+  async createSubscription(data: Partial<Subscription>) {
+    return this.post<Subscription>("/subscriptions/", data);
+  }
+
+  async updateSubscription(id: number, data: Partial<Subscription>) {
+    return this.patch<Subscription>(`/subscriptions/${id}/`, data);
+  }
+
+  async deleteSubscription(id: number) {
+    return this.delete(`/subscriptions/${id}/`);
+  }
+
+  // Recurring Runs
+  async getRecurringRuns() {
+    return this.get<{ count: number; results: RecurringRun[] }>("/recurring-runs/");
+  }
+
+  async triggerRecurringRun(period?: string) {
+    return this.post<{
+      status: string;
+      target_period: string;
+      created_count: number;
+      skipped_count: number;
+      failed_count: number;
+      created_invoices: string[];
+      skipped_items: any[];
+      failed_items: any[];
+    }>("/recurring-runs/trigger/", { period });
+  }
+
+  async previewRecurringRun(period?: string) {
+    const q = period ? `?period=${encodeURIComponent(period)}` : "";
+    return this.get<RecurringPreviewResponse>(`/recurring-runs/preview/${q}`);
+  }
+
+  async getRecurringStatus() {
+    return this.get<RecurringDashboardStatus>("/recurring-runs/status/");
   }
 }
 

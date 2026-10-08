@@ -20,6 +20,7 @@ import {
   Shield,
   CheckCircle2,
   AlertCircle,
+  RefreshCw,
 } from "lucide-react";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -62,6 +63,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     { href: "/services", label: "Services", icon: Layers, visible: true },
     // Admin Only Links
     { href: "/users", label: "Users & Roles", icon: UserCheck, visible: isAdmin },
+    { href: "/recurring-runs", label: "Recurring Runs", icon: RefreshCw, visible: isAdmin },
     { href: "/audit-logs", label: "Audit Logs", icon: History, visible: isAdmin },
     { href: "/settings", label: "Settings", icon: Settings, visible: isAdmin },
   ];

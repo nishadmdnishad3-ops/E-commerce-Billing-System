@@ -22,12 +22,14 @@ from .models import (
     Client,
     Service,
     ClientServicePrice,
+    Subscription,
     InvoiceTemplate,
     Invoice,
     InvoiceItem,
     Payment,
     AuditLog,
     LoginAttempt,
+    RecurringRun,
 )
 from .serializers import (
     UserDetailSerializer,
@@ -42,13 +44,16 @@ from .serializers import (
     ClientSerializer,
     ServiceSerializer,
     ClientServicePriceSerializer,
+    SubscriptionSerializer,
     InvoiceTemplateSerializer,
     InvoiceListSerializer,
     InvoiceDetailSerializer,
     InvoiceCreateUpdateSerializer,
     InvoiceItemSerializer,
     PaymentSerializer,
+    RecurringRunSerializer,
 )
+from .services import RecurringBillingService
 from .permissions import (
     IsAdminRole,
     IsAccountantOrAdmin,
@@ -368,6 +373,40 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     ordering_fields = ["timestamp", "action", "model_name"]
 
 
+class RecurringRunViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    /api/recurring-runs/
+    Admin-only listing and triggering of recurring automated billing runs.
+    """
+    queryset = RecurringRun.objects.all().order_by("-run_time")
+    serializer_class = RecurringRunSerializer
+    permission_classes = [IsAdminRole]
+
+    @action(detail=False, methods=["post"], permission_classes=[IsAdminRole])
+    def trigger(self, request):
+        period = request.data.get("period")
+        result = RecurringBillingService.run_recurring_billing(
+            target_period=period,
+            trigger=RecurringRun.TRIGGER_MANUAL,
+            force=True,
+            catch_up=True,
+            request=request,
+        )
+        return Response(result, status=status.HTTP_200_OK if result.get("status") != "FAILED" else status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=["get", "post"], permission_classes=[IsAdminRole])
+    def preview(self, request):
+        period = request.query_params.get("period") or request.data.get("period")
+        result = RecurringBillingService.preview_next_run(target_period=period)
+        return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], permission_classes=[IsAccountantOrAdmin])
+    def status(self, request):
+        result = RecurringBillingService.get_dashboard_status()
+        return Response(result, status=status.HTTP_200_OK)
+
+
+
 # ==============================================================================
 # 3. BILLING ENTITY VIEWSETS (STRICT PERMISSIONS & AUDITING)
 # ==============================================================================
@@ -470,6 +509,23 @@ class ClientServicePriceViewSet(viewsets.ModelViewSet):
     queryset = ClientServicePrice.objects.select_related("client", "service")
     serializer_class = ClientServicePriceSerializer
     filterset_fields = ["client", "service", "is_active"]
+
+    def get_permissions(self):
+        if self.action in ["list", "retrieve"]:
+            return [IsStaffOrAbove()]
+        return [IsAccountantOrAdmin()]
+
+
+class SubscriptionViewSet(viewsets.ModelViewSet):
+    """
+    /api/subscriptions/
+    Management of recurring subscriptions.
+    """
+    queryset = Subscription.objects.select_related("client", "service")
+    serializer_class = SubscriptionSerializer
+    filterset_fields = ["client", "service", "billing_cycle", "auto_status", "is_active"]
+    search_fields = ["custom_name", "client__name", "service__name"]
+    ordering_fields = ["created_at", "start_date", "client__name"]
 
     def get_permissions(self):
         if self.action in ["list", "retrieve"]:
@@ -655,96 +711,36 @@ class InvoiceViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"], permission_classes=[IsAccountantOrAdmin])
     def generate_monthly_bills(self, request):
-        """Batch-generate bills for all clients with subscribed services for a given month"""
+        """Batch-generate bills for all clients with subscribed services for a given month via RecurringBillingService"""
         billing_month = request.data.get("billing_month")
         if not billing_month:
             return Response({"error": "billing_month is required (e.g. 'May-2026')"}, status=status.HTTP_400_BAD_REQUEST)
 
-        company = Company.objects.filter(is_default=True).first() or Company.objects.first()
-        bank_account = BankAccount.objects.filter(is_default=True, is_active=True).first() or BankAccount.objects.first()
-        template = InvoiceTemplate.objects.filter(is_default=True).first() or InvoiceTemplate.objects.first()
+        # Ensure any legacy ClientServicePrice records are mirrored in Subscription
+        RecurringBillingService.sync_client_service_prices()
 
-        if not company:
-            return Response({"error": "Please configure a Company before generating bills."}, status=status.HTTP_400_BAD_REQUEST)
+        run_result = RecurringBillingService.run_recurring_billing(
+            target_period=billing_month,
+            trigger=RecurringRun.TRIGGER_MANUAL,
+            force=True,
+            catch_up=False,
+            request=request,
+        )
 
-        created_invoices = []
-        skipped_clients = []
-        clients = Client.objects.filter(is_active=True).prefetch_related("client_services__service")
-
-        with transaction.atomic():
-            for client in clients:
-                subscriptions = client.client_services.filter(is_active=True)
-                if not subscriptions.exists():
-                    continue
-
-                if Invoice.objects.filter(client=client, billing_month=billing_month).exists():
-                    skipped_clients.append({
-                        "client_id": client.id,
-                        "client_name": client.name,
-                        "reason": f"Invoice already exists for {billing_month}",
-                    })
-                    continue
-
-                first_sub = subscriptions.first()
-                service_name = first_sub.custom_name or first_sub.service.name
-                title = f"{service_name} Monthly Bill ({billing_month})"
-
-                invoice = Invoice.objects.create(
-                    title=title,
-                    billing_month=billing_month,
-                    client=client,
-                    company=company,
-                    bank_account=bank_account,
-                    template=template,
-                    status="ISSUED",
-                    issue_date=timezone.now().date(),
-                )
-
-                for idx, sub in enumerate(subscriptions, start=1):
-                    raw_name = sub.custom_name or sub.service.name
-                    item_name = f"{raw_name} ({billing_month})" if billing_month else raw_name
-                    spec = sub.custom_tech_specification or sub.service.default_tech_specification
-                    price = sub.custom_price or sub.service.default_price
-
-                    item = InvoiceItem(
-                        invoice=invoice,
-                        sl=idx,
-                        service=sub.service,
-                        item_name=item_name,
-                        technical_specification=spec,
-                        quantity=Decimal("1.00"),
-                        unit_price=price,
-                        total=price,
-                    )
-                    item.save(skip_invoice_recalc=True)
-
-                invoice.calculate_totals()
-                Invoice.objects.filter(pk=invoice.pk).update(
-                    sub_total=invoice.sub_total,
-                    vat_amount=invoice.vat_amount,
-                    payable_amount=invoice.payable_amount,
-                    advance_amount=invoice.advance_amount,
-                    paid_amount=invoice.paid_amount,
-                    due_amount=invoice.due_amount,
-                    status=invoice.status,
-                )
-                created_invoices.append(invoice.invoice_number)
-
-            record_audit_log(
-                AuditLog.ACTION_CREATE,
-                request=request,
-                model_name="Invoice",
-                object_repr=f"Batch generated {len(created_invoices)} invoices for {billing_month}",
-                changes={
-                    "generated_count": len(created_invoices),
-                    "skipped_count": len(skipped_clients),
-                    "month": billing_month,
-                },
-            )
+        generated_invoices = run_result.get("created_invoices", [])
+        skipped_raw = run_result.get("skipped_items", [])
+        skipped_clients = [
+            {
+                "client_id": item.get("client_id"),
+                "client_name": item.get("client_name"),
+                "reason": item.get("reason"),
+            }
+            for item in skipped_raw
+        ]
 
         return Response({
-            "message": f"Successfully generated {len(created_invoices)} bills for {billing_month}",
-            "generated_invoices": created_invoices,
+            "message": f"Successfully generated {len(generated_invoices)} bills for {billing_month}",
+            "generated_invoices": generated_invoices,
             "skipped_clients": skipped_clients,
         }, status=status.HTTP_201_CREATED)
 

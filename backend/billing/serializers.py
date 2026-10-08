@@ -11,11 +11,13 @@ from .models import (
     Client,
     Service,
     ClientServicePrice,
+    Subscription,
     InvoiceTemplate,
     Invoice,
     InvoiceItem,
     Payment,
     AuditLog,
+    RecurringRun,
 )
 
 User = get_user_model()
@@ -82,8 +84,21 @@ class ClientServicePriceSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class SubscriptionSerializer(serializers.ModelSerializer):
+    client_name = serializers.ReadOnlyField(source="client.name")
+    service_name = serializers.ReadOnlyField(source="service.name")
+    effective_price = serializers.ReadOnlyField()
+    effective_name = serializers.ReadOnlyField()
+    effective_tech_specification = serializers.ReadOnlyField()
+
+    class Meta:
+        model = Subscription
+        fields = "__all__"
+
+
 class ClientSerializer(serializers.ModelSerializer):
     client_services = ClientServicePriceSerializer(many=True, read_only=True)
+    subscriptions = SubscriptionSerializer(many=True, read_only=True)
 
     class Meta:
         model = Client
@@ -153,6 +168,8 @@ class InvoiceListSerializer(serializers.ModelSerializer):
             "invoice_number",
             "title",
             "billing_month",
+            "billing_period",
+            "subscription",
             "issue_date",
             "due_date",
             "status",
@@ -227,8 +244,16 @@ class InvoiceCreateUpdateSerializer(serializers.ModelSerializer):
             "received_by_label",
             "notes",
             "items",
+            "subscription",
+            "billing_period",
         ]
         read_only_fields = ["invoice_number"]
+        validators = []
+        extra_kwargs = {
+            "billing_period": {"required": False, "allow_blank": True},
+            "subscription": {"required": False, "allow_null": True},
+        }
+
 
     @transaction.atomic
     def create(self, validated_data):
@@ -398,4 +423,13 @@ class AuditLogSerializer(serializers.ModelSerializer):
             "timestamp",
         ]
         read_only_fields = fields
+
+
+class RecurringRunSerializer(serializers.ModelSerializer):
+    trigger_display = serializers.CharField(source="get_trigger_display", read_only=True)
+
+    class Meta:
+        model = RecurringRun
+        fields = "__all__"
+
 
