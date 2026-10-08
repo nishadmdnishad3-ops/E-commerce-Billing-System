@@ -9,6 +9,7 @@ export interface User {
   is_superuser: boolean;
   role: "ADMIN" | "ACCOUNTANT" | "STAFF";
   phone: string;
+  department: string;
 }
 
 export interface ManagedUser {
@@ -21,6 +22,7 @@ export interface ManagedUser {
   date_joined: string;
   role: "ADMIN" | "ACCOUNTANT" | "STAFF";
   phone: string;
+  department: string;
 }
 
 export interface AuditLog {
